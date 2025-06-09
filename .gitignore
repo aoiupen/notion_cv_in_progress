@@ -200,5 +200,7 @@ node_modules/
 package-lock.json
 
 # 디버그 뷰어 파일
+.cursorignore
+.etc/
 debug/
 design/
