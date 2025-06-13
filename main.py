@@ -9,7 +9,10 @@ from urllib.parse import urljoin
 from notion_client import AsyncClient
 from playwright.async_api import async_playwright
 from dotenv import load_dotenv
-from main import NOTION_API_KEY, PAGE_ID, OUTPUT_PDF_NAME, PAGE_TITLE, get_styles, fetch_all_child_blocks, blocks_to_html, extract_page_title
+from config import NOTION_API_KEY, CLAUDE_API_KEY, PAGE_ID
+from PySide6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QPushButton, QLabel, QSizePolicy
+from ui_rule_selector import RuleSelectorWidget
+from mainsub import get_styles, fetch_all_child_blocks, blocks_to_html, extract_page_title
 
 # --- 1. 설정: .env 파일에서 환경변수 불러오기 ---
 load_dotenv()
@@ -53,90 +56,49 @@ def get_styles():
     return """
     /* --- 폰트 및 기본 설정 --- */
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css');
-    
-    @page {
-        size: A4;
-        margin: 2cm;
-    }
+    @page { size: A4; margin: 2cm; }
     body {
         font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, 'Helvetica Neue', 'Segoe UI', 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', sans-serif;
-        line-height: 1.7;
+        line-height: 1.6;
         color: #333333;
         -webkit-font-smoothing: antialiased;
         font-size: 10.5pt; 
     }
-
-    /* --- 페이지 나누기 및 그룹 보호 규칙 --- */
-    h1:first-of-type { page-break-before: auto; }
-    h1 { page-break-before: always; }
-    hr + h1 { page-break-before: auto; margin-top: 2.5em; }
-    h1, h2, h3, h4, h5, h6 { page-break-after: avoid; }
-    p, ul, ol, blockquote, figure, pre, details, table { page-break-inside: avoid; }
-
-    /* --- 타이포그래피 및 블록 요소 스타일 --- */
-    h1 { font-size: 2.5em; margin-bottom: 0.8em; }
-    h2 { font-size: 1.8em; margin-top: 1.5em; margin-bottom: 1em; }
-    h3 { font-size: 1.2em; margin-top: 1.5em; }
-    p { margin: 1em 0; }
+    h1 { font-size: 2.5em; margin: 1.2em 0 0.1em 0; }
+    h2 { font-size: 1.8em; margin: 1.1em 0 0.4em 0; }
+    h3 { font-size: 1.2em; margin: 0.9em 0 0.3em 0; }
+    p { margin: 0.7em 0 0.7em 0; line-height: 1.6; }
+    .mention-inline { line-height: 1.1; }
+    ul, ol { margin: 0.25em 0 0.25em 1.5em; padding-left: 1.2em; }
+    li { margin: 0.13em 0; line-height: 1.7; }
+    li > ul, li > ol { margin: 0.13em 0 0.13em 1.2em; }
+    .nested-list { margin-left: 1.2em; margin-top: 0.13em; }
+    .nested-list li { margin: 0.13em 0; }
+    hr { border: 0; border-top: 1px solid #eaeaea; margin: 0.9em 0 0.9em 0; }
+    blockquote { border-left: 3px solid #ccc; padding-left: 1em; color: #666; margin: 0.5em 0; }
+    pre { background-color: #f8f8f8; padding: 1.2em; border-radius: 6px; white-space: pre-wrap; word-wrap: break-word; font-size: 0.9em; margin: 0.5em 0; }
+    code { font-family: 'D2Coding', 'Consolas', 'Monaco', monospace; }
     a { color: #0066cc; text-decoration: none; }
     a:hover { text-decoration: underline; }
-    hr { border: 0; border-top: 1px solid #eaeaea; margin: 2em 0; }
-    blockquote { border-left: 3px solid #ccc; padding-left: 1em; color: #666; margin-left: 0; }
-    pre { background-color: #f8f8f8; padding: 1.2em; border-radius: 6px; white-space: pre-wrap; word-wrap: break-word; font-size: 0.9em; }
-    code { font-family: 'D2Coding', 'Consolas', 'Monaco', monospace; }
-
-    /* --- 리스트 스타일 --- */
-    ul, ol {
-        margin: 0.8em 0;
-        padding-left: 1.5em;
-    }
-    
-    li {
-        margin: 0.4em 0;
-        line-height: 1.6;
-    }
-    
-    /* 중첩된 리스트 */
-    li > ul, li > ol {
-        margin: 0.3em 0 0.3em 1.5em;
-    }
-    
-    /* 리스트 내부의 불릿 포인트들 */
-    .nested-list {
-        margin-left: 1.5em;
-        margin-top: 0.3em;
-    }
-    
-    .nested-list li {
-        margin: 0.2em 0;
-    }
-
-    /* --- 이미지 및 figure 스타일 --- */
-    img {
-        max-width: 600px !important;
-        max-height: 350px !important;
-        object-fit: contain;
-        margin: 1em auto;
-        display: block;
-    }
-    
-    /* 특별히 큰 다이어그램용 */
-    .large-diagram {
-        max-width: 700px !important;
-        max-height: 400px !important;
-    }
-
-    figure {
-        margin: 1.5em 0;
-        width: 100%;
-    }
-
-    details { border: 1px solid #eaeaea; border-radius: 6px; padding: 1.2em; margin: 1.2em 0; }
+    img { max-width: 600px !important; max-height: 350px !important; object-fit: contain; margin: 1em auto; display: block; }
+    .large-diagram { max-width: 700px !important; max-height: 400px !important; }
+    figure { margin: 1.2em 0; width: 100%; }
+    details { border: 1px solid #eaeaea; border-radius: 6px; padding: 1.2em; margin: 0.7em 0; }
     summary { font-weight: 600; cursor: default; }
-
-    table { width: 100%; border-collapse: collapse; margin: 1.5em 0; font-size: 0.9em; table-layout: fixed; }
+    table { width: 100%; border-collapse: collapse; margin: 1em 0; font-size: 0.9em; table-layout: fixed; }
     th, td { border: 1px solid #ddd; padding: 0.5em 0.8em; text-align: left; vertical-align: top; word-wrap: break-word; word-break: break-all; white-space: pre-line; }
     th { background-color: #f2f2f2; font-weight: 600; }
+    /* 동기화 블록도 동일하게 */
+    .synced-block-container {
+        line-height: 1.6;
+    }
+    .synced-block-container p {
+        margin: 0.7em 0 0.7em 0;
+        line-height: 1.6;
+    }
+    .synced-block-container br {
+        display: inline;
+    }
     """
 
 
@@ -220,6 +182,17 @@ def get_github_info(url):
     }
 
 
+def is_gmail_url(url):
+    return url.startswith("mailto:") and ("@gmail.com" in url or "@googlemail.com" in url)
+
+
+def get_gmail_info(url):
+    return {
+        "title": url.replace("mailto:", ""),
+        "favicon": "https://ssl.gstatic.com/ui/v1/icons/mail/rfr/gmail.ico"
+    }
+
+
 def rich_text_to_html(rich_text_array, process_nested_bullets=False):
     """
     Notion의 rich_text 객체를 HTML로 변환합니다.
@@ -244,6 +217,14 @@ def rich_text_to_html(rich_text_array, process_nested_bullets=False):
             )
         elif href and is_github_url(href):
             info = get_github_info(href)
+            html += (
+                f'<span style="display:inline-flex;align-items:center;gap:0.4em;">'
+                f'<img src="{info["favicon"]}" style="width:1em;height:1em;vertical-align:middle;">'
+                f'<a href="{href}" target="_blank" style="font-weight:600;">{info["title"]}</a>'
+                f'</span>'
+            )
+        elif href and is_gmail_url(href):
+            info = get_gmail_info(href)
             html += (
                 f'<span style="display:inline-flex;align-items:center;gap:0.4em;">'
                 f'<img src="{info["favicon"]}" style="width:1em;height:1em;vertical-align:middle;">'
@@ -593,7 +574,7 @@ async def main():
         print(f"   페이지 제목: {page_title}")
     except Exception as e:
         print(f"   페이지 제목을 가져오지 못했습니다: {e}")
-        page_title = PAGE_TITLE
+        page_title = "My Portfolio"
     print(f"페이지({PAGE_ID}) 전체 블록을 가져오는 중...")
     blocks = await fetch_all_child_blocks(notion, PAGE_ID)
     print("HTML 변환 중...")
@@ -634,5 +615,79 @@ async def main():
         print("   - playwright install 명령어를 실행했는지 확인하세요.")
 
 
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("이력서/포폴 자동화 툴")
+        central = QWidget()
+        main_layout = QHBoxLayout()
+
+        # 좌측: 드롭박스
+        self.rule_selector = RuleSelectorWidget()
+        self.rule_selector.combo.currentIndexChanged.connect(self.update_buttons)
+        main_layout.addWidget(self.rule_selector)
+
+        # 우측: 버튼 3개 + 로딩 인디케이터(아래)
+        right_layout = QVBoxLayout()
+        self.translate_btn = QPushButton("번역")
+        self.improve_btn = QPushButton("개선")
+        self.export_btn = QPushButton("출력")
+        self.translate_btn.clicked.connect(self.on_translate)
+        self.improve_btn.clicked.connect(self.on_improve)
+        self.export_btn.clicked.connect(self.on_export)
+        right_layout.addWidget(self.translate_btn)
+        right_layout.addWidget(self.improve_btn)
+        right_layout.addWidget(self.export_btn)
+        right_layout.addStretch()
+        self.loading_label = QLabel("")
+        self.loading_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        right_layout.addWidget(self.loading_label)
+        main_layout.addLayout(right_layout)
+
+        central.setLayout(main_layout)
+        self.setCentralWidget(central)
+        self.update_buttons()  # 초기 버튼 상태
+
+    def update_buttons(self):
+        code = self.rule_selector.get_selected_rule()
+        # 한글 버전 4종: ko로 시작
+        if code.startswith("ko_"):
+            self.translate_btn.setEnabled(True)
+            self.improve_btn.setEnabled(True)
+            self.export_btn.setEnabled(True)
+        else:
+            self.translate_btn.setEnabled(False)
+            self.improve_btn.setEnabled(True)
+            self.export_btn.setEnabled(True)
+
+    def on_translate(self):
+        self.loading_label.setText("번역 중입니다...")
+        QApplication.processEvents()
+        # 실제 번역 작업 함수 호출 (여기서는 더미)
+        self.fake_work()
+        self.loading_label.setText("")
+
+    def on_improve(self):
+        self.loading_label.setText("개선(첨삭) 중입니다...")
+        QApplication.processEvents()
+        # 실제 개선 작업 함수 호출 (여기서는 더미)
+        self.fake_work()
+        self.loading_label.setText("")
+
+    def on_export(self):
+        self.loading_label.setText("출력 중입니다...")
+        QApplication.processEvents()
+        # 실제 출력 작업 함수 호출 (여기서는 더미)
+        self.fake_work()
+        self.loading_label.setText("")
+
+    def fake_work(self):
+        import time
+        time.sleep(1)  # 실제 작업 대체용 (1초 대기)
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())

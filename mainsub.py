@@ -5,16 +5,18 @@ import re
 import requests
 from bs4 import BeautifulSoup
 from notion_client import AsyncClient
+from notion_client.errors import APIResponseError # APIResponseError 임포트 추가
 from playwright.async_api import async_playwright
 from dotenv import load_dotenv
+import json
 
 # --- 1. 설정: .env 파일에서 환경변수 불러오기 ---
 load_dotenv()
 
 NOTION_API_KEY = os.getenv("NOTION_API_KEY")
 PAGE_ID = os.getenv("PAGE_ID")
+# ORG_ID는 제거됩니다.
 OUTPUT_PDF_NAME = "My_Portfolio_Final.pdf"
-PAGE_TITLE = os.getenv("PAGE_TITLE", "포트폴리오")
 
 # 환경변수가 제대로 로드되었는지 확인
 if not NOTION_API_KEY or not PAGE_ID:
@@ -50,42 +52,152 @@ NOTION_BG_MAP = {
 CELL_PADDING_PX = 16  # 좌우 합계 (8px + 8px)
 TABLE_TOTAL_WIDTH = 100  # % 기준
 
+# --- 첫 번째 수정 지점: get_styles() 함수 ---
 def get_styles():
     """PDF에 적용될 CSS 스타일을 반환합니다. (노션 줄간격/구분선/문단 간격 참고)"""
     return """
     /* --- 폰트 및 기본 설정 --- */
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css');
-    @page { size: A4; margin: 2cm; }
+
+    @page { 
+        size: A4; 
+        margin: 2cm; 
+    }
+
     body {
         font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, 'Helvetica Neue', 'Segoe UI', 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', sans-serif;
-        line-height: 1.7;
+        line-height: 1.6;
         color: #333333;
-        -webkit-font-smoothing: antialiased;
-        font-size: 10.5pt; 
+        font-size: 10.5pt;
     }
-    h1 { font-size: 2.5em; margin: 1.2em 0 0.5em 0; }
-    h2 { font-size: 1.8em; margin: 1.1em 0 0.4em 0; }
-    h3 { font-size: 1.2em; margin: 0.9em 0 0.3em 0; }
-    p { margin: 0.35em 0 0.35em 0; }
+
+    /* --- 제목 스타일 --- */
+    h1 { 
+    font-size: 2.5em; 
+    font-weight: 800; /* 더 굵게 */
+    margin: 0 0 0.5em 0; /* 위쪽 마진 제거, 아래쪽 여백 증가 */
+    line-height: 1.2; /* 줄간격 조정 */
+    color: #2d2d2d; /* 약간 더 진한 색 */
+    }
+    h2 { 
+    font-size: 1.5em; 
+    font-weight: 600; 
+    margin: 1.2em 0 0.3em 0; 
+    line-height: 1.3;
+    color: #2d2d2d;
+    }
+    h3 { 
+    font-size: 1.2em; 
+    font-weight: 600; 
+    margin: 1.0em 0 0.2em 0; 
+    line-height: 1.3;
+    color: #2d2d2d;
+    }
+
+    /* --- 텍스트 요소 --- */
+    p { margin: 0.7em 0; line-height: 1.6; }
+
+    /* --- 리스트 스타일 --- */
     ul, ol { margin: 0.25em 0 0.25em 1.5em; padding-left: 1.2em; }
     li { margin: 0.13em 0; line-height: 1.7; }
     li > ul, li > ol { margin: 0.13em 0 0.13em 1.2em; }
+
     .nested-list { margin-left: 1.2em; margin-top: 0.13em; }
     .nested-list li { margin: 0.13em 0; }
-    hr { border: 0; border-top: 1px solid #eaeaea; margin: 0.9em 0 0.9em 0; }
+
+    /* --- 구분선 및 인용문 --- */
+    hr { border: 0; border-top: 1px solid #eaeaea; margin: 0.9em 0; }
     blockquote { border-left: 3px solid #ccc; padding-left: 1em; color: #666; margin: 0.5em 0; }
-    pre { background-color: #f8f8f8; padding: 1.2em; border-radius: 6px; white-space: pre-wrap; word-wrap: break-word; font-size: 0.9em; margin: 0.5em 0; }
+
+    /* --- 코드 블록 --- */
+    pre { 
+        background-color: #f8f8f8; 
+        padding: 1.2em; 
+        border-radius: 6px; 
+        white-space: pre-wrap; 
+        overflow-wrap: break-word; 
+        font-size: 0.9em; 
+        margin: 0.5em 0; 
+    }
+
     code { font-family: 'D2Coding', 'Consolas', 'Monaco', monospace; }
+
+    /* --- 링크 --- */
     a { color: #0066cc; text-decoration: none; }
     a:hover { text-decoration: underline; }
-    img { max-width: 600px !important; max-height: 350px !important; object-fit: contain; margin: 1em auto; display: block; }
-    .large-diagram { max-width: 700px !important; max-height: 400px !important; }
+
+    /* --- 이미지 스타일 --- */
+    /* 기본 이미지 스타일 */
+    img { 
+        max-width: 600px !important; 
+        max-height: 350px !important; 
+        object-fit: contain; 
+    }
+
+    /* 노션 블록 이미지 (큰 이미지) */
+    .notion-block-image {
+        display: block;
+        margin: 1em auto;
+        width: 100%;
+        height: auto;
+        max-width: 100% !important; /* 부모 너비 초과 방지 */
+    }
+
+    /* 파비콘 (작은 아이콘) */
+    .favicon-img {
+        width: 1em !important;
+        height: 1em !important;
+        vertical-align: middle;
+        margin-right: 0.2em;
+        display: inline !important;
+        max-width: none !important; /* 기본 img 스타일 무시 */
+        max-height: none !important;
+    }
+
+    /* 큰 다이어그램용 */
+    .large-diagram { 
+        max-width: 100% !important; 
+        max-height: 60vh !important; 
+    }
+
     figure { margin: 1.2em 0; width: 100%; }
+
+    /* --- 접기/펼치기 --- */
     details { border: 1px solid #eaeaea; border-radius: 6px; padding: 1.2em; margin: 0.7em 0; }
     summary { font-weight: 600; cursor: default; }
-    table { width: 100%; border-collapse: collapse; margin: 1em 0; font-size: 0.9em; table-layout: fixed; }
-    th, td { border: 1px solid #ddd; padding: 0.5em 0.8em; text-align: left; vertical-align: top; word-wrap: break-word; word-break: break-all; white-space: pre-line; }
+
+    /* --- 테이블 --- */
+    table { 
+        width: 100%; 
+        border-collapse: collapse; 
+        margin: 1em 0; 
+        font-size: 0.9em; 
+        table-layout: fixed; 
+    }
+
+    th, td { 
+        border: 1px solid #ddd; 
+        padding: 0.5em 0.8em; 
+        text-align: left; 
+        vertical-align: top; 
+        overflow-wrap: break-word; 
+        white-space: pre-line; 
+    }
+
     th { background-color: #f2f2f2; font-weight: 600; }
+
+    /* --- 동기화 블록 --- */
+    .synced-block-container {
+        line-height: 1.6;
+    }
+
+    .synced-block-container p {
+        margin: 0.7em 0;
+    }
+
+    .synced-block-container br {
+        display: inline;
+    }
     """
 
 def extract_page_title(page_info):
@@ -97,10 +209,10 @@ def extract_page_title(page_info):
                 title_array = prop_data.get('title', [])
                 if title_array:
                     return ''.join([item['plain_text'] for item in title_array])
-        return PAGE_TITLE
+        return ""
     except Exception as e:
         print(f"제목 추출 중 오류: {e}")
-        return PAGE_TITLE
+        return ""
 
 def is_youtube_url(url):
     return (
@@ -171,6 +283,30 @@ def get_github_info(url):
         "favicon": "https://github.com/fluidicon.png"
     }
 
+def is_gmail_url(url):
+    return url.startswith("mailto:") and ("@gmail.com" in url or "@googlemail.com" in url)
+
+def get_gmail_info(url):
+    return {
+        "title": url.replace("mailto:", ""),
+        "favicon": "https://ssl.gstatic.com/ui/v1/icons/mail/rfr/gmail.ico"
+    }
+
+def is_linkedin_url(url):
+    return url.startswith("https://www.linkedin.com/") or url.startswith("http://www.linkedin.com/")
+
+def get_linkedin_info(url):
+    title_match = re.search(r'linkedin\.com/in/([^/?#]+)', url)
+    if title_match:
+        profile_name = title_match.group(1).replace('-', ' ').title()
+        title = f"{profile_name}'s LinkedIn"
+    else:
+        title = "LinkedIn Profile"
+    return {
+        "title": title
+    }
+
+# --- 두 번째 수정 지점: rich_text_to_html 함수 ---
 def rich_text_to_html(rich_text_array, process_nested_bullets=False):
     if not rich_text_array:
         return ""
@@ -180,18 +316,25 @@ def rich_text_to_html(rich_text_array, process_nested_bullets=False):
         if href and is_youtube_url(href):
             info = get_youtube_info(href)
             html += (
-                f'<span style="display:inline-flex;align-items:center;gap:0.4em;">'
-                f'<img src="{info["favicon"]}" style="width:1em;height:1em;vertical-align:middle;">'
-                f'<a href="{href}" target="_blank" style="font-weight:600;">YouTube</a>'
-                f'</span>'
+                f'<img src="{info["favicon"]}" class="favicon-img">' # class 추가
+                f'<a href="{href}" target="_blank" style="font-weight:600; text-decoration: none;">YouTube</a>'
             )
         elif href and is_github_url(href):
             info = get_github_info(href)
             html += (
-                f'<span style="display:inline-flex;align-items:center;gap:0.4em;">'
-                f'<img src="{info["favicon"]}" style="width:1em;height:1em;vertical-align:middle;">'
-                f'<a href="{href}" target="_blank" style="font-weight:600;">GitHub</a>'
-                f'</span>'
+                f'<img src="{info["favicon"]}" class="favicon-img">' # class 추가
+                f'<a href="{href}" target="_blank" style="font-weight:600; text-decoration: none;">GitHub</a>'
+            )
+        elif href and is_gmail_url(href):
+            info = get_gmail_info(href)
+            html += (
+                f'<img src="{info["favicon"]}" class="favicon-img">' # class 추가
+                f'<a href="{href}" target="_blank" style="font-weight:600; text-decoration: none;">{info["title"]}</a>'
+            )
+        elif href and is_linkedin_url(href):
+            info = get_linkedin_info(href)
+            html += (
+                f'<a href="{href}" target="_blank" style="font-weight:600;color:#0077B5;text-decoration: none;">{info["title"]}</a>'
             )
         else:
             text = chunk.get('plain_text', '').replace('\n', '<br>')
@@ -286,6 +429,22 @@ async def blocks_to_html(blocks, notion_client):
     while i < len(blocks):
         block = blocks[i]
         block_type = block['type']
+
+        # --- 동기화 블록 처리 로직 ---
+        if block_type == 'synced_block':
+            print(f"DEBUG: blocks_to_html에서 synced_block 처리 중. ID: {block.get('id')}")
+            synced_children = block.get('children')
+            if synced_children:
+                print(f"DEBUG: 동기화 블록에 children 있음. 개수: {len(synced_children)}")
+                synced_block_content = await blocks_to_html(synced_children, notion_client)
+            else:
+                print(f"DEBUG: 동기화 블록에 children 없음 또는 비어있음. ID: {block.get('id')}")
+                synced_block_content = ""
+            block_html = f"<div class='synced-block-container'>{synced_block_content}</div>"
+            html_parts.append(block_html)
+            i += 1
+            continue # 다음 블록으로 넘어감
+
         # 리스트 아이템 처리
         if block_type in ['bulleted_list_item', 'numbered_list_item']:
             list_tag = 'ul' if block_type == 'bulleted_list_item' else 'ol'
@@ -294,7 +453,7 @@ async def blocks_to_html(blocks, notion_client):
             while j < len(blocks) and blocks[j]['type'] == block_type:
                 current_block = blocks[j]
                 item_content = rich_text_to_html(
-                    current_block[block_type]['rich_text'], 
+                    current_block[block_type]['rich_text'],
                     process_nested_bullets=True
                 )
                 if current_block.get('has_children') and current_block.get('children'):
@@ -306,6 +465,8 @@ async def blocks_to_html(blocks, notion_client):
             html_parts.append(list_html)
             i = j
             continue
+
+        # --- 기타 블록 타입 처리 (기존 로직 유지) ---
         block_html = ""
         if block_type == 'heading_1':
             block_html = f"<h1>{rich_text_to_html(block['heading_1']['rich_text'])}</h1>"
@@ -317,10 +478,11 @@ async def blocks_to_html(blocks, notion_client):
             block_html = f"<h3>{h3_text}</h3>"
         elif block_type == 'paragraph':
             text = rich_text_to_html(block['paragraph']['rich_text'])
-            block_html = f"<p>{text if text.strip() else '&nbsp;'}</p>"
+            block_html = f"<p>{text if text.strip() else ' '}</p>"
             if block.get('has_children') and block.get('children'):
                 children_html = await blocks_to_html(block['children'], notion_client)
                 block_html += f"<div style='margin-left: 2em;'>{children_html}</div>"
+        # --- 세 번째 수정 지점: image 블록 처리 ---
         elif block_type == 'image':
             image_data = block['image']
             url = ''
@@ -328,7 +490,8 @@ async def blocks_to_html(blocks, notion_client):
                 url = image_data['file']['url']
             elif image_data.get('external'):
                 url = image_data['external']['url']
-            block_html = f"<figure><img src='{url}' alt='Image'></figure>"
+            # class="notion-block-image" 추가
+            block_html = f"<figure style='margin:1.2em 0;width:100%;'><img src='{url}' alt='Image' class='notion-block-image'></figure>"
         elif block_type == 'code':
             code_text = rich_text_to_html(block['code']['rich_text'])
             language = block['code'].get('language', '')
@@ -383,31 +546,164 @@ async def blocks_to_html(blocks, notion_client):
                 f"<div style='background:#f7f6f3;border-radius:8px;padding:0.001em 1em;margin:0.7em 0;'>"
                 f"{icon_html}{callout_text}{children_html}</div>"
             )
+        # 이 부분이 처리되지 않은 블록 타입에 대한 대비 (예: Unsupported 블록)
+        elif 'type' in block:
+            print(f"경고: 알 수 없거나 지원되지 않는 블록 타입: {block_type}. 블록 ID: {block.get('id')}")
+            # 개발/디버깅을 위해 이 블록을 HTML에 포함시키지 않거나, 대체 텍스트를 넣을 수 있습니다.
+            block_html = f"<p><em>[Unsupported Block Type: {block_type}]</em></p>"
+
         html_parts.append(block_html)
         i += 1
-    return ''.join(html_parts)
+    return '\n'.join(html_parts)
+
+# find_block_by_text_in_page 함수 제거됩니다.
+
+async def get_top_level_parent_id(notion_client, block_id):
+    """
+    주어진 블록 ID의 최상위 부모 (페이지 또는 데이터베이스) ID를 재귀적으로 찾습니다.
+    이 ID에 권한을 부여해야 합니다.
+    반환 값: (최상위 부모 ID, 'page' 또는 'database')
+    """
+    current_id = block_id
+    while True:
+        try:
+            block_info = await notion_client.blocks.retrieve(current_id)
+            parent = block_info.get('parent', {})
+            parent_type = parent.get('type')
+
+            if parent_type == 'page_id':
+                print(f"  [get_top_level_parent] 블록 {current_id}의 최상위 부모는 페이지: {parent.get('page_id')}")
+                return parent.get('page_id'), 'page'
+            elif parent_type == 'database_id':
+                print(f"  [get_top_level_parent] 블록 {current_id}의 최상위 부모는 데이터베이스: {parent.get('database_id')}")
+                return parent.get('database_id'), 'database'
+            elif parent_type == 'block_id':
+                # 부모가 블록인 경우, 그 부모 블록으로 다시 추적
+                next_id = parent.get('block_id')
+                print(f"  [get_top_level_parent] 블록 {current_id}의 부모는 블록: {next_id}. 계속 추적.")
+                current_id = next_id
+            elif parent_type == 'workspace':
+                # 최상위 워크스페이스에 속한 경우 (대부분 페이지)
+                # 이 경우는 현재 블록 ID 자체가 최상위 페이지 ID일 가능성이 높음.
+                print(f"  [get_top_level_parent] 블록 {current_id}는 워크스페이스 직속. 자신을 최상위 페이지 ID로 간주.")
+                return current_id, 'page' # 페이지 자체인 경우
+            else:
+                print(f"  [get_top_level_parent] 블록 {current_id}의 알 수 없는 부모 타입: {parent_type}")
+                return None, None # 알 수 없는 부모 타입
+
+        except APIResponseError as e:
+            if e.code == "block_not_found":
+                print(f"  [get_top_level_parent] 블록 {current_id}를 찾을 수 없습니다. (권한 문제 또는 삭제됨)")
+            else:
+                print(f"  [get_top_level_parent] API 오류 발생 ({current_id}): {e}")
+            return None, None
+        except Exception as e:
+            print(f"  [get_top_level_parent] 예측 불가능한 오류 발생 ({current_id}): {e}")
+            return None, None
+
+
+async def get_synced_block_original_and_top_parent(notion, block):
+    current_block = block
+    # 1. synced_block 사본이면 원본을 재귀적으로 추적
+    if current_block.get('type') == 'synced_block':
+        synced_from = current_block['synced_block'].get('synced_from')
+        if synced_from and 'block_id' in synced_from:
+            try:
+                original_block = await notion.blocks.retrieve(synced_from['block_id'])
+                # 재귀 호출하여 원본 블록의 원본 및 최상위 부모를 찾습니다.
+                return await get_synced_block_original_and_top_parent(notion, original_block)
+            except Exception as e:
+                # 오류 발생 시 출력 메시지 수정 (AttributeError 방지)
+                print(f"[get_synced_block] 원본 블록 접근 실패 (ID: {synced_from.get('block_id', '알 수 없음')}): 코드={getattr(e, 'code', 'N/A')}, 상세={e}")
+                # ORG_ID 관련 대체 로직 제거
+                print(f"[get_synced_block] 원본 블록을 찾을 수 없거나 접근 권한이 없습니다. (ID: {synced_from.get('block_id', '알 수 없음')})")
+                return None, None, None # 원본을 찾을 수 없거나 접근 실패 시
+
+    # 2. 최상위 부모 추적
+    block_id_to_find_parent = current_block['id'] # 현재 블록의 ID를 시작점으로 설정
+    parent = current_block.get('parent', {})
+    parent_type = parent.get('type')
+
+    # 'block_id' 타입의 부모를 계속 추적하여 최상위 페이지/데이터베이스/워크스페이스 부모를 찾습니다.
+    while parent_type == 'block_id':
+        next_id = parent.get('block_id')
+        try:
+            parent_block = await notion.blocks.retrieve(next_id)
+            parent = parent_block.get('parent', {})
+            parent_type = parent.get('type')
+            block_id_to_find_parent = parent_block['id'] # 현재 처리 중인 최상위 블록 ID 업데이트
+        except Exception as e:
+            print(f"[get_synced_block] 부모 블록 추적 실패 (ID: {next_id}): {e}")
+            # 부모 블록을 찾지 못하면 현재 블록과 None 반환 (최상위 부모 알 수 없음)
+            return current_block, None, None
+
+    # 최상위 부모 타입에 따른 반환
+    if parent_type == 'page_id':
+        print(f"[get_synced_block] 최상위 부모: page_id={parent.get('page_id')}")
+        return current_block, parent.get('page_id'), 'page'
+    elif parent_type == 'database_id':
+        print(f"[get_synced_block] 최상위 부모: database_id={parent.get('database_id')}")
+        return current_block, parent.get('database_id'), 'database'
+    elif parent_type == 'workspace':
+        print(f"[get_synced_block] 최상위 부모: workspace (page로 간주) id={block_id_to_find_parent}")
+        # workspace의 경우, Notion API는 특정 페이지 ID를 제공하지 않으므로
+        # 현재 추적 중인 최상위 블록의 ID를 최상위 부모 ID로 간주합니다.
+        return current_block, block_id_to_find_parent, 'page'
+    else:
+        print(f"[get_synced_block] 최상위 부모 타입 알 수 없음: {parent_type}. 블록 ID: {current_block.get('id')}")
+        return current_block, None, None
+
 
 async def fetch_all_child_blocks(notion, block_id):
     blocks = []
     try:
         response = await notion.blocks.children.list(block_id=block_id, page_size=100)
-        blocks.extend(response['.etc'])
+        blocks.extend(response['results'])
         next_cursor = response.get('next_cursor')
         while next_cursor:
             response = await notion.blocks.children.list(
-                block_id=block_id, 
-                page_size=100, 
+                block_id=block_id,
+                page_size=100,
                 start_cursor=next_cursor
             )
-            blocks.extend(response['.etc'])
+            blocks.extend(response['results'])
             next_cursor = response.get('next_cursor')
     except Exception as e:
         print(f"블록 가져오기 오류: {e}")
         return []
+
+    processed_blocks = [] # 새로운 리스트를 만들어 처리된 블록을 저장
     for block in blocks:
-        if block.get('has_children'):
+        # 동기화된 블록이면 항상 원본을 따라가고, 최상위 부모도 추적
+        if block.get('type') == 'synced_block':
+            orig_block, top_parent_id, top_parent_type = await get_synced_block_original_and_top_parent(notion, block)
+            if orig_block is None:
+                print(f"경고: 동기화 블록 {block.get('id')}의 원본을 찾거나 접근할 수 없어 건너뜜.")
+                continue  # 원본도 못 찾으면 이 블록은 건너뜜
+
+            # 원본 블록의 children 처리:
+            # 원본 블록도 일반 블록처럼 'has_children'을 체크하고,
+            # 다시 fetch_all_child_blocks를 재귀적으로 호출하여 모든 자식 블록을 가져옵니다.
+            # 이렇게 해야 원본 동기화 블록 내부에 있는 다른 동기화 블록이나 복합 블록들이
+            # 올바르게 파싱되고 처리될 수 있습니다.
+            if orig_block.get('has_children'):
+                orig_block['children'] = await fetch_all_child_blocks(notion, orig_block['id'])
+
+            # 여기서 중요한 점: processed_blocks에 추가하는 것은 'orig_block' 그 자체입니다.
+            # 이 'orig_block'은 이제 자신의 자식 블록 정보(orig_block['children'])를 포함하게 됩니다.
+            # 그리고 blocks_to_html에서 이 orig_block의 type이 'synced_block'일 때
+            # block['synced_block']['children']을 다시 blocks_to_html로 넘겨주므로,
+            # 원본 블록의 자식들은 올바르게 렌더링됩니다.
+            processed_blocks.append(orig_block)
+            print(f"[fetch_all_child_blocks] 동기화 블록의 최상위 부모: {top_parent_id} (타입: {top_parent_type})")
+        # 일반 블록의 children 처리 (이 부분은 기존과 동일)
+        elif block.get('has_children'):
             block['children'] = await fetch_all_child_blocks(notion, block['id'])
-    return blocks
+            processed_blocks.append(block)
+        else:
+            processed_blocks.append(block) # 자식이 없는 일반 블록도 추가
+
+    return processed_blocks # 처리된 블록 리스트 반환
 
 async def main():
     print("--- Notion to PDF (분류 없이 전체 인쇄) ---")
@@ -418,7 +714,7 @@ async def main():
         print(f"   페이지 제목: {page_title}")
     except Exception as e:
         print(f"   페이지 제목을 가져오지 못했습니다: {e}")
-        page_title = PAGE_TITLE
+        page_title = ""
     print(f"페이지({PAGE_ID}) 전체 블록을 가져오는 중...")
     blocks = await fetch_all_child_blocks(notion, PAGE_ID)
     print("HTML 변환 중...")
@@ -434,7 +730,7 @@ async def main():
     </head>
     <body>
         <h1>{page_title}</h1>
-        <div style='height: 1.5em;'></div>
+        <div style='height: 0.3em;'></div>
         {content_html}
     </body>
     </html>
@@ -460,6 +756,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-
