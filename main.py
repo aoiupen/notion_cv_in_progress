@@ -11,6 +11,7 @@ from playwright.async_api import async_playwright
 from dotenv import load_dotenv
 from config import NOTION_API_KEY, CLAUDE_API_KEY, PAGE_ID
 from PySide6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QPushButton, QLabel, QSizePolicy
+from PySide6.QtCore import Qt
 from ui_rule_selector import RuleSelectorWidget
 from mainsub import get_styles, fetch_all_child_blocks, blocks_to_html, extract_page_title
 
@@ -619,71 +620,120 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("이력서/포폴 자동화 툴")
-        central = QWidget()
+
+        # 상태 변수
+        self.resume_or_portfolio = "resume"  # "resume" or "portfolio"
+        self.lang_direction = "ko2en"        # "ko2en" or "en2ko"
+
+        # --- 좌측: 이력서/포폴 토글 버튼 ---
+        left_layout = QVBoxLayout()
+        self.resume_btn = QPushButton("이력서")
+        self.portfolio_btn = QPushButton("포폴")
+        self.resume_btn.setCheckable(True)
+        self.portfolio_btn.setCheckable(True)
+        self.resume_btn.clicked.connect(self.on_resume_toggle)
+        self.portfolio_btn.clicked.connect(self.on_portfolio_toggle)
+        left_layout.addWidget(self.resume_btn)
+        left_layout.addWidget(self.portfolio_btn)
+        left_layout.addStretch()
+
+        # --- 우측: 언어 토글 + 실행 버튼 ---
+        right_layout = QHBoxLayout()
+        self.ko2en_btn = QPushButton("한->영")
+        self.en2ko_btn = QPushButton("영->한")
+        self.ko2en_btn.setCheckable(True)
+        self.en2ko_btn.setCheckable(True)
+        self.ko2en_btn.clicked.connect(self.on_ko2en_toggle)
+        self.en2ko_btn.clicked.connect(self.on_en2ko_toggle)
+        self.run_btn = QPushButton("실행")
+        self.run_btn.clicked.connect(self.on_run)
+        right_layout.addWidget(self.ko2en_btn)
+        right_layout.addWidget(self.en2ko_btn)
+        right_layout.addWidget(self.run_btn)
+
+        # --- 메인 레이아웃 ---
         main_layout = QHBoxLayout()
+        left_widget = QWidget()
+        left_widget.setLayout(left_layout)
+        right_widget = QWidget()
+        right_widget.setLayout(right_layout)
+        main_layout.addWidget(left_widget)
+        main_layout.addWidget(right_widget)
 
-        # 좌측: 드롭박스
-        self.rule_selector = RuleSelectorWidget()
-        self.rule_selector.combo.currentIndexChanged.connect(self.update_buttons)
-        main_layout.addWidget(self.rule_selector)
-
-        # 우측: 버튼 3개 + 로딩 인디케이터(아래)
-        right_layout = QVBoxLayout()
-        self.translate_btn = QPushButton("번역")
-        self.improve_btn = QPushButton("개선")
-        self.export_btn = QPushButton("출력")
-        self.translate_btn.clicked.connect(self.on_translate)
-        self.improve_btn.clicked.connect(self.on_improve)
-        self.export_btn.clicked.connect(self.on_export)
-        right_layout.addWidget(self.translate_btn)
-        right_layout.addWidget(self.improve_btn)
-        right_layout.addWidget(self.export_btn)
-        right_layout.addStretch()
-        self.loading_label = QLabel("")
-        self.loading_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        right_layout.addWidget(self.loading_label)
-        main_layout.addLayout(right_layout)
-
+        central = QWidget()
         central.setLayout(main_layout)
         self.setCentralWidget(central)
-        self.update_buttons()  # 초기 버튼 상태
 
-    def update_buttons(self):
-        code = self.rule_selector.get_selected_rule()
-        # 한글 버전 4종: ko로 시작
-        if code.startswith("ko_"):
-            self.translate_btn.setEnabled(True)
-            self.improve_btn.setEnabled(True)
-            self.export_btn.setEnabled(True)
+        # 초기 상태 반영
+        self.update_resume_portfolio_ui()
+        self.update_lang_ui()
+
+    # --- 토글 버튼 핸들러 ---
+    def on_resume_toggle(self):
+        self.resume_or_portfolio = "resume"
+        self.update_resume_portfolio_ui()
+
+    def on_portfolio_toggle(self):
+        self.resume_or_portfolio = "portfolio"
+        self.update_resume_portfolio_ui()
+
+    def update_resume_portfolio_ui(self):
+        if self.resume_or_portfolio == "resume":
+            self.resume_btn.setChecked(True)
+            self.portfolio_btn.setChecked(False)
+            self.resume_btn.setStyleSheet("background: white; color: black;")
+            self.portfolio_btn.setStyleSheet("background: black; color: white;")
         else:
-            self.translate_btn.setEnabled(False)
-            self.improve_btn.setEnabled(True)
-            self.export_btn.setEnabled(True)
+            self.resume_btn.setChecked(False)
+            self.portfolio_btn.setChecked(True)
+            self.resume_btn.setStyleSheet("background: black; color: white;")
+            self.portfolio_btn.setStyleSheet("background: white; color: black;")
 
+    def on_ko2en_toggle(self):
+        self.lang_direction = "ko2en"
+        self.update_lang_ui()
+
+    def on_en2ko_toggle(self):
+        self.lang_direction = "en2ko"
+        self.update_lang_ui()
+
+    def update_lang_ui(self):
+        if self.lang_direction == "ko2en":
+            self.ko2en_btn.setChecked(True)
+            self.en2ko_btn.setChecked(False)
+            self.ko2en_btn.setStyleSheet("background: #b6fcd5; color: black;")  # 연초록
+            self.en2ko_btn.setStyleSheet("background: #eee8d5; color: black;")  # 연주황(비활성)
+        else:
+            self.ko2en_btn.setChecked(False)
+            self.en2ko_btn.setChecked(True)
+            self.ko2en_btn.setStyleSheet("background: #eee8d5; color: black;")  # 연초록(비활성)
+            self.en2ko_btn.setStyleSheet("background: #ffe4b5; color: black;")  # 연주황
+
+    # --- 실행 버튼 핸들러 ---
+    def on_run(self):
+        # 현재 상태에 따라 분기
+        if self.resume_or_portfolio == "resume" and self.lang_direction == "ko2en":
+            self.on_translate()  # 예시: 한->영 이력서 번역
+        elif self.resume_or_portfolio == "resume" and self.lang_direction == "en2ko":
+            self.on_improve()    # 예시: 영->한 이력서 개선
+        elif self.resume_or_portfolio == "portfolio" and self.lang_direction == "ko2en":
+            self.on_export()     # 예시: 한->영 포폴 출력
+        elif self.resume_or_portfolio == "portfolio" and self.lang_direction == "en2ko":
+            self.on_export()     # 예시: 영->한 포폴 출력
+        # 실제로는 각 조합에 맞는 함수로 연결
+
+    # 기존 함수 재활용 (실제 기능에 맞게 구현)
     def on_translate(self):
-        self.loading_label.setText("번역 중입니다...")
-        QApplication.processEvents()
-        # 실제 번역 작업 함수 호출 (여기서는 더미)
-        self.fake_work()
-        self.loading_label.setText("")
+        print("이력서 한->영 번역 실행")
+        # 기존 번역 함수 호출
 
     def on_improve(self):
-        self.loading_label.setText("개선(첨삭) 중입니다...")
-        QApplication.processEvents()
-        # 실제 개선 작업 함수 호출 (여기서는 더미)
-        self.fake_work()
-        self.loading_label.setText("")
+        print("이력서 영->한 개선 실행")
+        # 기존 개선 함수 호출
 
     def on_export(self):
-        self.loading_label.setText("출력 중입니다...")
-        QApplication.processEvents()
-        # 실제 출력 작업 함수 호출 (여기서는 더미)
-        self.fake_work()
-        self.loading_label.setText("")
-
-    def fake_work(self):
-        import time
-        time.sleep(1)  # 실제 작업 대체용 (1초 대기)
+        print("포폴 출력 실행")
+        # 기존 출력 함수 호출
 
 
 if __name__ == "__main__":
