@@ -1,0 +1,306 @@
+/* --- 개선된 포트폴리오 CSS (전체) --- */
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css');
+
+@page {
+    size: A4;
+    margin: 2.5cm 2cm;
+}
+
+body {
+    font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    line-height: 1.6;
+    color: #2d2d2d;
+    font-size: 11pt;
+    margin: 0;  /* 기본 마진 제거 */
+    padding: 0; /* 기본 패딩 제거 */
+}
+
+/* --- 제목 스타일 --- */
+h1 {
+    font-size: 2.5em;
+    font-weight: 800;
+    margin: 0 0 0.5em 0; /* h1 자체의 하단 마진은 유지 */
+    line-height: 1.2;
+    color: #333333;
+}
+
+/* <h1> 태그 바로 다음에 오는 모든 블록 요소의 상단 마진을 통일 */
+/* 원하는 '중간 높이' 간격을 이 margin-top 값으로 조절하세요. */
+/* 예를 들어, 1.0em 이나 1.2em 등 적절한 값을 찾아보세요. */
+h1 + h2,
+h1 + h3,
+h1 + p,
+h1 + ul,
+h1 + ol,
+h1 + div.synced-block-container,
+h1 + .notion-block-image,
+h1 + pre,
+h1 + blockquote,
+h1 + hr
+{
+    margin-top: 1.0em !important; /* '중간' 간격으로 설정 (예시: 1.0em). !important로 다른 규칙보다 우선. */
+}
+
+p {
+    /* 기존 마진은 그대로 두고, 필요하다면 padding-bottom 추가 */
+    margin: 0.5em 0;
+    padding-bottom: 0.5em; /* 예를 들어 */
+}
+
+h2 {
+    font-size: 1.6em;
+    font-weight: 700;
+    margin: 0 0 0.4em 0; /* 다른 위치에서는 이 기본 마진이 적용됨 */
+    line-height: 1.2;
+    color: #1a1a1a;
+}
+
+h3 {
+    font-size: 1.3em;
+    font-weight: 600;
+    margin: 1.2em 0 0.3em 0;
+    line-height: 1.3;
+    color: #2d2d2d;
+}
+
+/* --- 텍스트 --- */
+p {
+    min-height: 1em; /* 또는 다른 적절한 값 */
+    /* 다른 스타일 유지 */
+}
+
+/* --- 리스트 --- */
+ul, ol {
+    margin: 1em 0 1em 1.5em;
+    padding-left: 1.2em;
+}
+
+li {
+    margin: 0.5em 0;
+    line-height: 1.6;
+}
+
+/* --- 이미지 (최종 개선 - 특이성 고려) --- */
+
+/* 모든 notion 이미지 블록의 기본 스타일 */
+.notion-block-image {
+    display: block;
+    margin: 1.5em auto;
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    /* max-height: 100%; <- 필요시 추가. PDF 페이지 높이에 맞추는 경우 고려 */
+    object-fit: contain; /* 이미지 비율 유지 및 컨테이너에 맞게 축소 */
+    border-radius: 8px;
+    page-break-inside: avoid;
+    page-break-before: auto;
+}
+
+/* Notion 이미지 블록 내부에 있는 실제 img 태그 (가장 중요) */
+.notion-block-image > img,
+img.notion-block-image { /* .notion-block-image 클래스를 가진 img 태그 */
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    /* max-height: 100%; <- 필요시 추가 */
+    object-fit: contain; /* 핵심: 항상 비율 유지 */
+}
+
+/* 강제로 비율 변형하는 인라인 스타일 무력화 (특이성 높임) */
+[class*="notion-block-image"][style*="width"],
+[class*="notion-block-image"][style*="height"] {
+    width: auto !important; /* 인라인 스타일보다 우선하도록 다시 !important 적용 */
+    height: auto !important; /* 인라인 스타일보다 우선하도록 다시 !important 적용 */
+}
+
+/* 문서 최상위 레벨의 이미지는 최대 확장 (비율 유지) - 페이지 여백 고려 */
+/* 이전 논의에서 이 부분을 제거하여 해결되었다고 하셨으므로, max-width: calc(100%)만 유지합니다. */
+body > .notion-block-image {
+    max-width: calc(100%);
+    width: auto;
+    height: auto;
+    object-fit: contain;
+}
+
+/* 모든 img 태그에 기본 라운드 적용 (일반성) */
+img {
+    border-radius: 8px;
+    max-width: 100%;
+}
+
+/* 모든 이미지 관련 요소에 라운드 적용 (더 포괄적) */
+img,
+.notion-block-image,
+image,
+picture img,
+figure img {
+    border-radius: 8px;
+}
+
+/* 이미지 컨테이너도 라운드 적용 및 넘침 숨김 */
+picture,
+figure {
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+/* --- 콜아웃 --- */
+.callout {
+    background: none;
+    border: none;
+    border-left: 3px solid #e0e0e0;
+    border-radius: 0;
+    padding: 0 0 0 1.5em;
+    margin: 2em 0;
+    font-style: italic;
+    line-height: 1.7;
+}
+
+.callout p {
+    margin: 0.8em 0;
+}
+
+.callout p:first-child {
+    margin-top: 0;
+}
+
+.callout p:last-child {
+    margin-bottom: 0;
+}
+
+/* --- 링크 --- */
+a {
+    color: #2d2d2d;
+    text-decoration: none;
+    font-weight: 500;
+}
+
+a:hover {
+    color: #0066cc;
+    text-decoration: underline;
+}
+
+/* --- 테이블 --- */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1em 0;
+    font-size: 0.9em;
+    page-break-inside: avoid;
+    page-break-before: auto;
+}
+
+th, td {
+    border: 0px solid #000000; /* 🔥 여기에 #ddd 대신 #000000 (검은색) 적용 */
+    padding: 0.5em 0.8em;
+    text-align: left;
+    vertical-align: top;
+    overflow-wrap: break-word;
+    white-space: pre-line;
+}
+
+th {
+    /* background-color: #f2f2f2; */
+    font-weight: 600;
+}
+
+.table-header-cell {
+    font-weight: semibold !important;
+    background-color: #dfdfdf !important;
+}
+
+/* --- 코드 블록 --- */
+pre {
+    background-color: #f7f7f7;
+    padding: 1.2em;
+    border-radius: 6px;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    font-size: 0.9em;
+    margin: 0.5em 0;
+    page-break-inside: avoid;
+    page-break-before: auto;
+}
+
+code {
+    font-family: 'D2Coding', 'Consolas', 'Monaco', monospace;
+}
+
+/* --- 기타 요소 --- */
+hr {
+    border: 0;
+    border-top: 1px solid #eaeaea;
+    margin: 0.9em 0;
+}
+
+blockquote {
+    border-left: 3px solid #ccc;
+    padding-left: 1em;
+    color: #666;
+    margin: 0.5em 0;
+}
+
+/* --- 기타 스타일 --- */
+.contact-info {
+    font-size: 1.1em;
+    color: #666;
+    margin: 0.5em 0 1.5em 0;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 1em;
+}
+
+.highlight-number {
+    font-weight: 700;
+    color: #2563eb;
+}
+
+.contact-section {
+    color: #666;
+    font-size: 1.05em;
+    margin: 0.5em 0 2em 0;
+    line-height: 1.4;
+}
+
+/* --- 페이지 나누기 제어 (정교화) --- */
+h1, h2, h3 {
+    page-break-inside: avoid;
+    orphans: 2;
+}
+
+h2 + *,
+h3 + * {
+    page-break-before: avoid;
+}
+
+p {
+    orphans: 3;
+    widows: 3;
+}
+
+ul, ol {
+    page-break-inside: auto;
+}
+
+.page-break {
+    page-break-before: always;
+}
+
+/* 제목이 없을 때 첫 번째 요소 마진 조정 */
+/* 이 규칙은 `body > *:first-child`에 적용되며, `h1`이 없는 경우 첫 번째 블록의 마진을 조정합니다. */
+/* `h1 + *` 규칙과는 별개로 작동합니다. */
+body > *:first-child {
+    margin-top: 0;
+}
+
+/* 동기화 블록 내부의 첫 번째 자식 요소의 상단 마진 제거 */
+.synced-block-container > *:first-child {
+    margin-top: 0;
+}
+
+.empty-line {
+    height: 0.8em;
+    margin: 0;
+    padding: 0.4em 0;
+    box-sizing: border-box;
+}
+

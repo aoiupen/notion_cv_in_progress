@@ -9,6 +9,7 @@ from notion_client.errors import APIResponseError # APIResponseError 임포트 �
 from playwright.async_api import async_playwright
 from dotenv import load_dotenv
 import json
+from PyPDF2 import PdfMerger
 
 # --- 1. 설정: .env 파일에서 환경변수 불러오기 ---
 load_dotenv()
@@ -19,7 +20,7 @@ PAGE_ID = os.getenv("PAGE_ID")
 OUTPUT_PDF_NAME = "My_Portfolio_Final.pdf"
 
 # 환경변수가 제대로 로드되었는지 확인
-if not NOTION_API_KEY or not PAGE_ID:
+if not NOTION_API_KEY:
     print("❌ 오류: .env 파일에 NOTION_API_KEY와 PAGE_ID를 설정해주세요.")
     sys.exit(1)
 
@@ -52,153 +53,17 @@ NOTION_BG_MAP = {
 CELL_PADDING_PX = 16  # 좌우 합계 (8px + 8px)
 TABLE_TOTAL_WIDTH = 100  # % 기준
 
-# --- 첫 번째 수정 지점: get_styles() 함수 ---
+# --- CSS 파일 분리: get_styles()는 CSS 파일을 읽어 반환 ---
 def get_styles():
-    """PDF에 적용될 CSS 스타일을 반환합니다. (노션 줄간격/구분선/문단 간격 참고)"""
-    return """
-    /* --- 폰트 및 기본 설정 --- */
-    @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css');
-
-    @page { 
-        size: A4; 
-        margin: 2cm; 
-    }
-
-    body {
-        font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, 'Helvetica Neue', 'Segoe UI', 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', sans-serif;
-        line-height: 1.6;
-        color: #333333;
-        font-size: 10.5pt;
-    }
-
-    /* --- 제목 스타일 --- */
-    h1 { 
-    font-size: 2.5em; 
-    font-weight: 800; /* 더 굵게 */
-    margin: 0 0 0.5em 0; /* 위쪽 마진 제거, 아래쪽 여백 증가 */
-    line-height: 1.2; /* 줄간격 조정 */
-    color: #2d2d2d; /* 약간 더 진한 색 */
-    }
-    h2 { 
-    font-size: 1.5em; 
-    font-weight: 600; 
-    margin: 1.2em 0 0.3em 0; 
-    line-height: 1.3;
-    color: #2d2d2d;
-    }
-    h3 { 
-    font-size: 1.2em; 
-    font-weight: 600; 
-    margin: 1.0em 0 0.2em 0; 
-    line-height: 1.3;
-    color: #2d2d2d;
-    }
-
-    /* --- 텍스트 요소 --- */
-    p { margin: 0.7em 0; line-height: 1.6; }
-
-    /* --- 리스트 스타일 --- */
-    ul, ol { margin: 0.25em 0 0.25em 1.5em; padding-left: 1.2em; }
-    li { margin: 0.13em 0; line-height: 1.7; }
-    li > ul, li > ol { margin: 0.13em 0 0.13em 1.2em; }
-
-    .nested-list { margin-left: 1.2em; margin-top: 0.13em; }
-    .nested-list li { margin: 0.13em 0; }
-
-    /* --- 구분선 및 인용문 --- */
-    hr { border: 0; border-top: 1px solid #eaeaea; margin: 0.9em 0; }
-    blockquote { border-left: 3px solid #ccc; padding-left: 1em; color: #666; margin: 0.5em 0; }
-
-    /* --- 코드 블록 --- */
-    pre { 
-        background-color: #f8f8f8; 
-        padding: 1.2em; 
-        border-radius: 6px; 
-        white-space: pre-wrap; 
-        overflow-wrap: break-word; 
-        font-size: 0.9em; 
-        margin: 0.5em 0; 
-    }
-
-    code { font-family: 'D2Coding', 'Consolas', 'Monaco', monospace; }
-
-    /* --- 링크 --- */
-    a { color: #0066cc; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-
-    /* --- 이미지 스타일 --- */
-    /* 기본 이미지 스타일 */
-    img { 
-        max-width: 600px !important; 
-        max-height: 350px !important; 
-        object-fit: contain; 
-    }
-
-    /* 노션 블록 이미지 (큰 이미지) */
-    .notion-block-image {
-        display: block;
-        margin: 1em auto;
-        width: 100%;
-        height: auto;
-        max-width: 100% !important; /* 부모 너비 초과 방지 */
-    }
-
-    /* 파비콘 (작은 아이콘) */
-    .favicon-img {
-        width: 1em !important;
-        height: 1em !important;
-        vertical-align: middle;
-        margin-right: 0.2em;
-        display: inline !important;
-        max-width: none !important; /* 기본 img 스타일 무시 */
-        max-height: none !important;
-    }
-
-    /* 큰 다이어그램용 */
-    .large-diagram { 
-        max-width: 100% !important; 
-        max-height: 60vh !important; 
-    }
-
-    figure { margin: 1.2em 0; width: 100%; }
-
-    /* --- 접기/펼치기 --- */
-    details { border: 1px solid #eaeaea; border-radius: 6px; padding: 1.2em; margin: 0.7em 0; }
-    summary { font-weight: 600; cursor: default; }
-
-    /* --- 테이블 --- */
-    table { 
-        width: 100%; 
-        border-collapse: collapse; 
-        margin: 1em 0; 
-        font-size: 0.9em; 
-        table-layout: fixed; 
-    }
-
-    th, td { 
-        border: 1px solid #ddd; 
-        padding: 0.5em 0.8em; 
-        text-align: left; 
-        vertical-align: top; 
-        overflow-wrap: break-word; 
-        white-space: pre-line; 
-    }
-
-    th { background-color: #f2f2f2; font-weight: 600; }
-
-    /* --- 동기화 블록 --- */
-    .synced-block-container {
-        line-height: 1.6;
-    }
-
-    .synced-block-container p {
-        margin: 0.7em 0;
-    }
-
-    .synced-block-container br {
-        display: inline;
-    }
-    """
+    """루트(최상위) 경로의 portfolio_style.css 파일 내용을 반환합니다."""
+    css_path = os.path.join(os.getcwd(), 'portfolio_style.css')
+    try:
+        with open(css_path, encoding='utf-8') as f:
+            css = f.read()
+        return css
+    except Exception as e:
+        print(f"CSS 파일 읽기 오류: {e}")
+        return ""
 
 def extract_page_title(page_info):
     """Notion 페이지 정보에서 제목을 추출합니다."""
@@ -308,36 +173,18 @@ def get_linkedin_info(url):
 
 # --- 두 번째 수정 지점: rich_text_to_html 함수 ---
 def rich_text_to_html(rich_text_array, process_nested_bullets=False):
+    """미니멀한 스타일의 rich_text 변환"""
     if not rich_text_array:
         return ""
     html = ""
     for chunk in rich_text_array:
         href = chunk.get("href")
-        if href and is_youtube_url(href):
-            info = get_youtube_info(href)
-            html += (
-                f'<img src="{info["favicon"]}" class="favicon-img">' # class 추가
-                f'<a href="{href}" target="_blank" style="font-weight:600; text-decoration: none;">YouTube</a>'
-            )
-        elif href and is_github_url(href):
-            info = get_github_info(href)
-            html += (
-                f'<img src="{info["favicon"]}" class="favicon-img">' # class 추가
-                f'<a href="{href}" target="_blank" style="font-weight:600; text-decoration: none;">GitHub</a>'
-            )
-        elif href and is_gmail_url(href):
-            info = get_gmail_info(href)
-            html += (
-                f'<img src="{info["favicon"]}" class="favicon-img">' # class 추가
-                f'<a href="{href}" target="_blank" style="font-weight:600; text-decoration: none;">{info["title"]}</a>'
-            )
-        elif href and is_linkedin_url(href):
-            info = get_linkedin_info(href)
-            html += (
-                f'<a href="{href}" target="_blank" style="font-weight:600;color:#0077B5;text-decoration: none;">{info["title"]}</a>'
-            )
+        text = chunk.get('plain_text', '').replace('\n', '<br>')
+        
+        if href:
+            # 파비콘 없이 텍스트만 표시
+             html += f'<a href="{href}" target="_blank">{text}</a>'
         else:
-            text = chunk.get('plain_text', '').replace('\n', '<br>')
             html += apply_annotations(text, chunk)
     return html
 
@@ -394,8 +241,8 @@ def estimate_column_widths_with_pixel_heuristic(table_rows):
     total_content_length = sum(col_lengths)
     if total_content_length == 0:
         return [100 / max_cols] * max_cols if max_cols > 0 else []
-    PIXEL_PER_CHAR = 5.3
-    MIN_COL_WIDTH_PX = 40
+    PIXEL_PER_CHAR = 4
+    MIN_COL_WIDTH_PX = 65
     estimated_px_widths = [max(MIN_COL_WIDTH_PX, length * PIXEL_PER_CHAR) for length in col_lengths]
     total_estimated_px_width = sum(estimated_px_widths)
     percent_widths = [(px_width / total_estimated_px_width) * 100 for px_width in estimated_px_widths]
@@ -491,7 +338,7 @@ async def blocks_to_html(blocks, notion_client):
             elif image_data.get('external'):
                 url = image_data['external']['url']
             # class="notion-block-image" 추가
-            block_html = f"<figure style='margin:1.2em 0;width:100%;'><img src='{url}' alt='Image' class='notion-block-image'></figure>"
+            block_html = f"<img src='{url}' alt='Image' class='notion-block-image'>"
         elif block_type == 'code':
             code_text = rich_text_to_html(block['code']['rich_text'])
             language = block['code'].get('language', '')
@@ -509,6 +356,7 @@ async def blocks_to_html(blocks, notion_client):
         elif block_type == 'table':
             table_info = block['table']
             has_column_header = table_info.get('has_column_header', False)
+            has_row_header = table_info.get('has_row_header', False)
             width_ratios = estimate_column_widths_with_pixel_heuristic(block.get('children', []))
             colgroup_html = ''
             if width_ratios:
@@ -521,13 +369,16 @@ async def blocks_to_html(blocks, notion_client):
                 for i_row, row_block in enumerate(block['children']):
                     if row_block['type'] == 'table_row':
                         cells = row_block['table_row']['cells']
-                        row_tag = 'th' if has_column_header and i_row == 0 else 'td'
                         row_bg = row_block['table_row'].get('background', 'default')
                         table_html_content += f"<tr style='background:{NOTION_BG_MAP.get(row_bg, '#fff')}'>"
                         for col_idx, cell in enumerate(cells):
                             style = get_cell_style(cell, row_bg=row_bg)
                             width_style = f"width:{width_ratios[col_idx]:.2f}%;" if col_idx < len(width_ratios) else ''
-                            table_html_content += f"<{row_tag} style='{style}{width_style}'>{rich_text_to_html(cell)}</{row_tag}>"
+                            # 제목 행/열에만 <th class="table-header-cell"> 적용
+                            if (has_column_header and i_row == 0) or (has_row_header and col_idx == 0):
+                                table_html_content += f"<th class='table-header-cell' style='{style}{width_style}'>{rich_text_to_html(cell)}</th>"
+                            else:
+                                table_html_content += f"<td style='{style}{width_style}'>{rich_text_to_html(cell)}</td>"
                         table_html_content += "</tr>"
             table_html_content += "</table>"
             block_html = table_html_content
@@ -542,8 +393,10 @@ async def blocks_to_html(blocks, notion_client):
             children_html = ''
             if block.get('has_children') and block.get('children'):
                 children_html = await blocks_to_html(block['children'], notion_client)
+            
+            # class 사용으로 변경 (인라인 스타일 제거)
             block_html = (
-                f"<div style='background:#f7f6f3;border-radius:8px;padding:0.001em 1em;margin:0.7em 0;'>"
+                f"<div class='callout'>"
                 f"{icon_html}{callout_text}{children_html}</div>"
             )
         # 이 부분이 처리되지 않은 블록 타입에 대한 대비 (예: Unsupported 블록)
@@ -706,53 +559,99 @@ async def fetch_all_child_blocks(notion, block_id):
     return processed_blocks # 처리된 블록 리스트 반환
 
 async def main():
-    print("--- Notion to PDF (분류 없이 전체 인쇄) ---")
+    print("--- Notion to PDF (여러 PAGE_ID 순회) ---")
     notion = AsyncClient(auth=NOTION_API_KEY)
-    try:
-        page_info = await notion.pages.retrieve(page_id=PAGE_ID)
-        page_title = extract_page_title(page_info)
-        print(f"   페이지 제목: {page_title}")
-    except Exception as e:
-        print(f"   페이지 제목을 가져오지 못했습니다: {e}")
-        page_title = ""
-    print(f"페이지({PAGE_ID}) 전체 블록을 가져오는 중...")
-    blocks = await fetch_all_child_blocks(notion, PAGE_ID)
-    print("HTML 변환 중...")
-    content_html = await blocks_to_html(blocks, notion)
-    styles = get_styles()
-    full_html = f"""
-    <!DOCTYPE html>
-    <html lang=\"ko\">
-    <head>
-        <meta charset=\"UTF-8\">
-        <title>{page_title}</title>
-        <style>{styles}</style>
-    </head>
-    <body>
-        <h1>{page_title}</h1>
-        <div style='height: 0.3em;'></div>
-        {content_html}
-    </body>
-    </html>
-    """
-    # HTML도 저장
-    os.makedirs(".etc", exist_ok=True)
-    html_path = os.path.join(".etc", "My_Portfolio_Final.html")
-    pdf_path = os.path.join(".etc", OUTPUT_PDF_NAME)
-    with open(html_path, "w", encoding="utf-8") as f:
-        f.write(full_html)
-    print("PDF 변환 중...")
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-            await page.set_content(full_html, wait_until="networkidle")
-            await page.pdf(path=pdf_path, format="A4", print_background=True)
-            await browser.close()
-        print(f"\n🎉 성공! '{os.path.abspath(pdf_path)}' 파일이 생성되었습니다.")
-    except Exception as e:
-        print(f"\n❌ PDF 생성 중 오류 발생: {e}")
-        print("   - playwright install 명령어를 실행했는지 확인하세요.")
+    page_ids = []
+    for i in range(0,1):
+        pid = os.getenv(f"PAGE_ID_{i}")
+        if pid:
+            page_ids.append(pid)
+    # 중복 제거 (입력 순서 유지)
+    page_ids = list(dict.fromkeys(page_ids))
+    if not page_ids:
+        print(".env에 PAGE_ID_0 ~ PAGE_ID_9 중 최소 1개가 필요합니다.")
+        return
+
+    # 하위 폴더 생성
+    temp_dir = os.path.join(".etc", "temp")
+    os.makedirs(temp_dir, exist_ok=True)
+    temp_pdf_paths = []
+    temp_html_paths = []
+
+    for idx, PAGE_ID in enumerate(page_ids):
+        try:
+            page_info = await notion.pages.retrieve(page_id=PAGE_ID)
+            page_title = extract_page_title(page_info)
+            print(f"   [{idx}] 페이지 제목: {page_title}")
+        except Exception as e:
+            print(f"   [{idx}] 페이지 제목을 가져오지 못했습니다: {e}")
+            page_title = f"Page_{idx}"
+        print(f"[{idx}] 페이지({PAGE_ID}) 전체 블록을 가져오는 중...")
+        blocks = await fetch_all_child_blocks(notion, PAGE_ID)
+        print(f"[{idx}] HTML 변환 중...")
+        content_html = await blocks_to_html(blocks, notion)
+        styles = get_styles()
+        def generate_html_with_conditional_title(page_title, content_html, styles):
+            clean_title = page_title.strip() if page_title else ""
+            if clean_title:
+                title_section = f'<h1>{clean_title}</h1><div style="height: 0.3em;"></div>'
+                body_class = ""
+                html_title = clean_title
+            else:
+                title_section = ""
+                body_class = ' class="no-title"'
+                html_title = f"Portfolio_{idx}"
+            return f"""
+            <!DOCTYPE html>
+            <html lang=\"ko\">
+            <head>
+                <meta charset=\"UTF-8\">
+                <title>{html_title}</title>
+                <style>{styles}</style>
+            </head>
+            <body{body_class}>
+                {title_section}
+                {content_html}
+            </body>
+            </html>
+            """
+        full_html = generate_html_with_conditional_title(page_title, content_html, styles)
+        html_path = os.path.join(temp_dir, f"My_Portfolio_{idx}.html")
+        pdf_path = os.path.join(temp_dir, f"My_Portfolio_{idx}.pdf")
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(full_html)
+        print(f"[{idx}] PDF 변환 중...")
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page()
+                await page.set_content(full_html, wait_until="networkidle")
+                await page.pdf(path=pdf_path, format="A4", print_background=True)
+                await browser.close()
+            print(f"   🎉 [{idx}] '{os.path.abspath(pdf_path)}' 파일이 생성되었습니다.")
+            temp_pdf_paths.append(pdf_path)
+            temp_html_paths.append(html_path)
+        except Exception as e:
+            print(f"   ❌ [{idx}] PDF 생성 중 오류 발생: {e}")
+            print("   - playwright install 명령어를 실행했는지 확인하세요.")
+    # PDF 병합
+    if temp_pdf_paths:
+        merger = PdfMerger()
+        for pdf in temp_pdf_paths:
+            merger.append(pdf)
+        final_pdf_path = os.path.join(".etc", OUTPUT_PDF_NAME)
+        merger.write(final_pdf_path)
+        merger.close()
+        print(f"\n🎉 최종 병합 PDF: '{os.path.abspath(final_pdf_path)}' 파일이 생성되었습니다.")
+        # 최종 HTML도 저장 (개별 HTML을 순서대로 합침)
+        final_html_path = os.path.join(".etc", "My_Portfolio_Final.html")
+        with open(final_html_path, "w", encoding="utf-8") as f:
+            for html_file in temp_html_paths:
+                with open(html_file, "r", encoding="utf-8") as hf:
+                    f.write(hf.read())
+        print(f"최종 HTML: '{os.path.abspath(final_html_path)}' 파일이 생성되었습니다.")
+    else:
+        print("PDF 병합할 파일이 없습니다.")
 
 if __name__ == "__main__":
     asyncio.run(main())
