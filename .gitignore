@@ -204,3 +204,4 @@ package-lock.json
 .etc/
 debug/
 design/
+migration/

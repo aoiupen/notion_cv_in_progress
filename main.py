@@ -9,17 +9,20 @@ from urllib.parse import urljoin
 from notion_client import AsyncClient
 from playwright.async_api import async_playwright
 from dotenv import load_dotenv
-from config import NOTION_API_KEY, CLAUDE_API_KEY, PAGE_ID
-from PySide6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QPushButton, QLabel, QSizePolicy
-from PySide6.QtCore import Qt
-from ui_rule_selector import RuleSelectorWidget
-from mainsub import get_styles, fetch_all_child_blocks, blocks_to_html, extract_page_title
+from config import NOTION_API_KEY, CLAUDE_API_KEY
+from PySide6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QPushButton, QLabel, QSizePolicy, QProgressBar, QTextEdit, QGroupBox, QMessageBox, QFileDialog, QListWidget, QListWidgetItem, QAbstractItemView, QLineEdit
+from PySide6.QtCore import Qt, QThread, Signal, QTimer
+from PySide6.QtGui import QFont, QPalette, QColor
+from core_engine import ProcessingConfig, NotionPortfolioEngine, create_config
+from typing import Optional
+from pathlib import Path
+import threading
 
 # --- 1. 설정: .env 파일에서 환경변수 불러오기 ---
 load_dotenv()
 
 # 환경변수가 제대로 로드되었는지 확인
-if not NOTION_API_KEY or not PAGE_ID:
+if not NOTION_API_KEY:
     print("❌ 오류: .env 파일에 NOTION_API_KEY와 PAGE_ID를 설정해주세요.")
     sys.exit(1)
 
@@ -599,7 +602,7 @@ async def main():
     # HTML도 저장
     os.makedirs(".etc", exist_ok=True)
     html_path = os.path.join(".etc", "My_Portfolio_Final.html")
-    pdf_path = os.path.join(".etc", OUTPUT_PDF_NAME)
+    pdf_path = os.path.join(".etc", "My_Portfolio_Final.pdf")
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(full_html)
     print("PDF 변환 중...")
@@ -616,128 +619,568 @@ async def main():
         print("   - playwright install 명령어를 실행했는지 확인하세요.")
 
 
+class WorkerThread(QThread):
+    """백그라운드에서 비동기 작업을 처리하는 워커 스레드"""
+    
+    # 시그널 정의
+    progress_updated = Signal(int)  # 진행률 업데이트
+    status_updated = Signal(str)    # 상태 메시지 업데이트  
+    finished = Signal(str)          # 작업 완료 (결과 경로)
+    error_occurred = Signal(str)    # 에러 발생
+    
+    def __init__(self, config: ProcessingConfig, workflow_type: str):
+        super().__init__()
+        self.config = config
+        self.workflow_type = workflow_type  # 'translate', 'export', 'full'
+        self.engine = NotionPortfolioEngine()
+    
+    def run(self):
+        """워커 스레드 실행 메인 함수"""
+        try:
+            # 새로운 이벤트 루프 생성
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            if self.workflow_type == 'translate':
+                result = loop.run_until_complete(self._run_translation())
+            elif self.workflow_type == 'export':
+                result = loop.run_until_complete(self._run_export())
+            elif self.workflow_type == 'full':
+                result = loop.run_until_complete(self._run_full_workflow())
+            else:
+                raise ValueError(f"Unknown workflow type: {self.workflow_type}")
+            
+            if result:
+                self.finished.emit(result)
+            else:
+                self.error_occurred.emit("작업이 실패했습니다.")
+                
+        except Exception as e:
+            self.error_occurred.emit(f"오류 발생: {str(e)}")
+        finally:
+            loop.close()
+    
+    async def _run_translation(self) -> Optional[str]:
+        """번역 워크플로우 실행"""
+        self.status_updated.emit("🔄 번역 작업 시작...")
+        self.progress_updated.emit(10)
+        
+        result = await self.engine.translate_and_enhance(self.config)
+        self.progress_updated.emit(100)
+        
+        return f"번역 완료: {result}" if result else None
+    
+    async def _run_export(self) -> Optional[str]:
+        """PDF 출력 워크플로우 실행"""
+        self.status_updated.emit("📄 PDF 생성 시작...")
+        self.progress_updated.emit(10)
+        
+        self.status_updated.emit("📥 Notion 데이터 가져오는 중...")
+        self.progress_updated.emit(30)
+        
+        self.status_updated.emit("🔄 HTML 변환 중...")
+        self.progress_updated.emit(60)
+        
+        self.status_updated.emit("📋 PDF 생성 중...")
+        self.progress_updated.emit(80)
+        
+        result = await self.engine.export_to_pdf(self.config)
+        self.progress_updated.emit(100)
+        
+        return result
+    
+    async def _run_full_workflow(self) -> Optional[str]:
+        """전체 워크플로우 실행"""
+        self.status_updated.emit("🚀 전체 프로세스 시작...")
+        self.progress_updated.emit(5)
+        
+        if self.config.with_translation:
+            self.status_updated.emit("🔄 번역 작업 중...")
+            self.progress_updated.emit(20)
+            await self.engine.translate_and_enhance(self.config)
+            self.progress_updated.emit(50)
+        
+        self.status_updated.emit("📄 PDF 생성 중...")
+        self.progress_updated.emit(70)
+        
+        result = await self.engine.full_workflow(self.config)
+        self.progress_updated.emit(100)
+        
+        return result
+
+
+class ModernButton(QPushButton):
+    """현대적인 스타일의 커스텀 버튼"""
+    
+    def __init__(self, text: str, parent=None):
+        super().__init__(text, parent)
+        self.setMinimumHeight(45)
+        self.setFont(QFont("Arial", 11, QFont.Weight.Medium))
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        
+    def set_primary_style(self):
+        """주요 버튼 스타일 적용"""
+        self.setStyleSheet("""
+            QPushButton {
+                background-color: #2563eb;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 12px 24px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background-color: #1d4ed8;
+            }
+            QPushButton:pressed {
+                background-color: #1e40af;
+            }
+            QPushButton:disabled {
+                background-color: #94a3b8;
+            }
+        """)
+    
+    def set_toggle_style(self, is_active: bool = False):
+        """토글 버튼 스타일 적용"""
+        if is_active:
+            self.setStyleSheet("""
+                QPushButton {
+                    background-color: #059669;
+                    color: white;
+                    border: 2px solid #059669;
+                    border-radius: 8px;
+                    padding: 10px 20px;
+                    font-weight: 600;
+                }
+                QPushButton:hover {
+                    background-color: #047857;
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                QPushButton {
+                    background-color: transparent;
+                    color: #374151;
+                    border: 2px solid #d1d5db;
+                    border-radius: 8px;
+                    padding: 10px 20px;
+                    font-weight: 500;
+                }
+                QPushButton:hover {
+                    border-color: #9ca3af;
+                    background-color: #f9fafb;
+                }
+            """)
+
+
 class MainWindow(QMainWindow):
+    """메인 애플리케이션 윈도우"""
+    
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("이력서/포폴 자동화 툴")
-
+        self.setWindowTitle("이력서/포폴 자동화 툴 v2.0")
+        self.setMinimumSize(300, 500)
+        
         # 상태 변수
-        self.resume_or_portfolio = "resume"  # "resume" or "portfolio"
-        self.lang_direction = "ko2en"        # "ko2en" or "en2ko"
+        self.doc_type = "resume"      # "resume" or "portfolio"
+        self.source_lang = "ko"       # "ko" or "en"
+        self.target_lang = "en"       # "ko" or "en"
+        self.worker_thread = None
+        
+        # UI 초기화
+        self._init_ui()
+        self._check_environment()
+        
+    def _init_ui(self):
+        """UI 구성요소 초기화"""
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # 메인 레이아웃
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setSpacing(20)
+        main_layout.setContentsMargins(30, 30, 30, 30)
+        
+        # 제목
+        title_label = QLabel("이력서/포폴 자동화 툴")
+        title_label.setFont(QFont("Arial", 18, QFont.Weight.Bold))
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label.setStyleSheet("color: #1f2937; margin-bottom: 10px;")
+        main_layout.addWidget(title_label)
+        
+        # Notion 페이지 목록 그룹
+        page_group = self._create_page_list_group()
+        main_layout.addWidget(page_group)
+        
+        # 언어/실행 그룹을 한 줄에 배치
+        row_layout = QHBoxLayout()
+        lang_group = self._create_language_group()
+        action_group, full_btn = self._create_action_group_with_full_btn()
+        option_group = self._create_option_group()
+        row_layout.addWidget(lang_group, 2)
+        row_layout.addWidget(action_group, 2)
+        row_layout.addWidget(option_group, 2)
+        row_layout.addWidget(full_btn, 1)
+        main_layout.addLayout(row_layout)
+        
+        # 진행 상황 표시
+        progress_group = self._create_progress_group()
+        main_layout.addWidget(progress_group)
+        
+        # 결과 표시 영역
+        result_group = self._create_result_group()
+        main_layout.addWidget(result_group)
+        
+        # 스트레치 추가
+        main_layout.addStretch()
+        
+        # 모든 위젯 생성 후 상태 초기화
+        self._set_language("ko", "en")
+    
+    def _create_page_list_group(self) -> QGroupBox:
+        """Notion 페이지 목록 그룹 생성"""
+        group = QGroupBox("📄 Notion 페이지 선택 (단일 선택)")
+        group.setFont(QFont("Arial", 12, QFont.Weight.Medium))
+        layout = QVBoxLayout(group)
+        self.page_list = QListWidget()
+        self.page_list.setFont(QFont("Arial", 12))
+        self.page_list.setFixedHeight(400)  # 기존보다 2배 높이
+        self.page_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        layout.addWidget(self.page_list)
+        threading.Thread(target=self._load_notion_pages).start()
+        return group
 
-        # --- 좌측: 이력서/포폴 토글 버튼 ---
-        left_layout = QVBoxLayout()
-        self.resume_btn = QPushButton("이력서")
-        self.portfolio_btn = QPushButton("포폴")
-        self.resume_btn.setCheckable(True)
-        self.portfolio_btn.setCheckable(True)
-        self.resume_btn.clicked.connect(self.on_resume_toggle)
-        self.portfolio_btn.clicked.connect(self.on_portfolio_toggle)
-        left_layout.addWidget(self.resume_btn)
-        left_layout.addWidget(self.portfolio_btn)
-        left_layout.addStretch()
-
-        # --- 우측: 언어 토글 + 실행 버튼 ---
-        right_layout = QHBoxLayout()
-        self.ko2en_btn = QPushButton("한->영")
-        self.en2ko_btn = QPushButton("영->한")
-        self.ko2en_btn.setCheckable(True)
-        self.en2ko_btn.setCheckable(True)
-        self.ko2en_btn.clicked.connect(self.on_ko2en_toggle)
-        self.en2ko_btn.clicked.connect(self.on_en2ko_toggle)
-        self.run_btn = QPushButton("실행")
-        self.run_btn.clicked.connect(self.on_run)
-        right_layout.addWidget(self.ko2en_btn)
-        right_layout.addWidget(self.en2ko_btn)
-        right_layout.addWidget(self.run_btn)
-
-        # --- 메인 레이아웃 ---
-        main_layout = QHBoxLayout()
-        left_widget = QWidget()
-        left_widget.setLayout(left_layout)
-        right_widget = QWidget()
-        right_widget.setLayout(right_layout)
-        main_layout.addWidget(left_widget)
-        main_layout.addWidget(right_widget)
-
-        central = QWidget()
-        central.setLayout(main_layout)
-        self.setCentralWidget(central)
-
-        # 초기 상태 반영
-        self.update_resume_portfolio_ui()
-        self.update_lang_ui()
-
-    # --- 토글 버튼 핸들러 ---
-    def on_resume_toggle(self):
-        self.resume_or_portfolio = "resume"
-        self.update_resume_portfolio_ui()
-
-    def on_portfolio_toggle(self):
-        self.resume_or_portfolio = "portfolio"
-        self.update_resume_portfolio_ui()
-
-    def update_resume_portfolio_ui(self):
-        if self.resume_or_portfolio == "resume":
-            self.resume_btn.setChecked(True)
-            self.portfolio_btn.setChecked(False)
-            self.resume_btn.setStyleSheet("background: white; color: black;")
-            self.portfolio_btn.setStyleSheet("background: black; color: white;")
+    def _load_notion_pages(self):
+        try:
+            notion = AsyncClient(auth=os.getenv("NOTION_API_KEY"))
+            import asyncio
+            def extract_title(page):
+                try:
+                    props = page.get('properties', {})
+                    for prop in props.values():
+                        if prop.get('type') == 'title':
+                            arr = prop.get('title', [])
+                            if arr:
+                                return ''.join([t['plain_text'] for t in arr])
+                    return "Untitled"
+                except Exception:
+                    return "Untitled"
+            async def fetch_pages():
+                result = await notion.search(filter={"property": "object", "value": "page"})
+                return result["results"]
+            pages = asyncio.run(fetch_pages())
+            self.page_list.clear()
+            for page in pages:
+                title = extract_title(page)
+                item = QListWidgetItem(f"{title} ({page['id'][:8]})")
+                item.setData(Qt.UserRole, page['id'])
+                self.page_list.addItem(item)
+        except Exception as e:
+            self.page_list.addItem(f"페이지 목록 불러오기 실패: {e}")
+    
+    def _create_language_group(self) -> QGroupBox:
+        """언어 방향 선택 그룹 생성 (버튼 배치 커스텀)"""
+        group = QGroupBox("🌐 언어 설정")
+        group.setFont(QFont("Arial", 12, QFont.Weight.Medium))
+        grid = QHBoxLayout(group)
+        # 왼쪽: 한→영, 영→한 (상하)
+        left_col = QVBoxLayout()
+        self.ko_to_en_btn = ModernButton("한→영")
+        self.en_to_ko_btn = ModernButton("영→한")
+        self.ko_to_en_btn.setCheckable(True)
+        self.en_to_ko_btn.setCheckable(True)
+        self.ko_to_en_btn.clicked.connect(lambda: self._set_language("ko", "en"))
+        self.en_to_ko_btn.clicked.connect(lambda: self._set_language("en", "ko"))
+        left_col.addWidget(self.ko_to_en_btn)
+        left_col.addWidget(self.en_to_ko_btn)
+        # 오른쪽: 한, 영 (상하)
+        right_col = QVBoxLayout()
+        self.ko_only_btn = ModernButton("한")
+        self.en_only_btn = ModernButton("영")
+        self.ko_only_btn.setCheckable(True)
+        self.en_only_btn.setCheckable(True)
+        self.ko_only_btn.clicked.connect(lambda: self._set_language("ko", "ko"))
+        self.en_only_btn.clicked.connect(lambda: self._set_language("en", "en"))
+        right_col.addWidget(self.ko_only_btn)
+        right_col.addWidget(self.en_only_btn)
+        grid.addLayout(left_col)
+        grid.addLayout(right_col)
+        return group
+    
+    def _create_action_group_with_full_btn(self):
+        """실행 버튼 그룹(번역, PDF) + 실행 버튼을 우측에 따로 반환"""
+        group = QGroupBox("⚡ 실행")
+        group.setFont(QFont("Arial", 12, QFont.Weight.Medium))
+        layout = QVBoxLayout(group)
+        self.translate_btn = ModernButton("번역")
+        self.export_btn = ModernButton("PDF")
+        self.translate_btn.clicked.connect(lambda: self._start_workflow("translate"))
+        self.export_btn.clicked.connect(lambda: self._start_workflow("export"))
+        layout.addWidget(self.translate_btn)
+        layout.addWidget(self.export_btn)
+        # 전체 실행 버튼은 따로 반환
+        self.full_btn = ModernButton("실행")
+        self.full_btn.set_primary_style()
+        self.full_btn.setMinimumHeight(90)  # 두 행에 걸쳐 보이도록
+        self.full_btn.clicked.connect(lambda: self._start_workflow("full"))
+        return group, self.full_btn
+    
+    def _create_option_group(self) -> QGroupBox:
+        """옵션 박스: 시작/끝 입력, 더미 버튼 포함"""
+        group = QGroupBox("옵션")
+        group.setFont(QFont("Arial", 12, QFont.Weight.Medium))
+        layout = QVBoxLayout(group)
+        # 시작/끝 입력
+        row = QHBoxLayout()
+        self.start_edit = QLineEdit()
+        self.start_edit.setPlaceholderText("시작")
+        self.end_edit = QLineEdit()
+        self.end_edit.setPlaceholderText("끝")
+        row.addWidget(self.start_edit)
+        row.addWidget(self.end_edit)
+        layout.addLayout(row)
+        # 더미 버튼
+        self.dummy_btn = ModernButton("옵션 적용")
+        layout.addWidget(self.dummy_btn)
+        return group
+    
+    def _create_progress_group(self) -> QGroupBox:
+        """진행 상황 표시 그룹 생성"""
+        group = QGroupBox("📊 진행 상황")
+        group.setFont(QFont("Arial", 12, QFont.Weight.Medium))
+        layout = QVBoxLayout(group)
+        
+        self.status_label = QLabel("대기 중...")
+        self.status_label.setFont(QFont("Arial", 10))
+        self.status_label.setStyleSheet("color: #6b7280;")
+        
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setMinimum(0)
+        self.progress_bar.setMaximum(100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 2px solid #e5e7eb;
+                border-radius: 8px;
+                background-color: #f3f4f6;
+                text-align: center;
+                font-weight: 600;
+            }
+            QProgressBar::chunk {
+                background-color: #059669;
+                border-radius: 6px;
+            }
+        """)
+        
+        layout.addWidget(self.status_label)
+        layout.addWidget(self.progress_bar)
+        
+        return group
+    
+    def _create_result_group(self) -> QGroupBox:
+        """결과 표시 그룹 생성"""
+        group = QGroupBox("📋 결과")
+        group.setFont(QFont("Arial", 12, QFont.Weight.Medium))
+        layout = QVBoxLayout(group)
+        
+        self.result_text = QTextEdit()
+        self.result_text.setMaximumHeight(120)
+        self.result_text.setFont(QFont("Consolas", 9))
+        self.result_text.setStyleSheet("""
+            QTextEdit {
+                border: 1px solid #d1d5db;
+                border-radius: 6px;
+                background-color: #f9fafb;
+                padding: 8px;
+            }
+        """)
+        
+        # 결과 관리 버튼들
+        button_layout = QHBoxLayout()
+        
+        self.open_folder_btn = ModernButton("📂 결과 폴더 열기")
+        self.clear_result_btn = ModernButton("🗑️ 결과 지우기")
+        
+        self.open_folder_btn.clicked.connect(self._open_result_folder)
+        self.clear_result_btn.clicked.connect(self._clear_results)
+        
+        button_layout.addWidget(self.open_folder_btn)
+        button_layout.addWidget(self.clear_result_btn)
+        button_layout.addStretch()
+        
+        layout.addWidget(self.result_text)
+        layout.addLayout(button_layout)
+        
+        return group
+    
+    def _check_environment(self):
+        """환경 설정 확인"""
+        missing = []
+        if not NOTION_API_KEY:
+            missing.append("NOTION_API_KEY")
+        if not CLAUDE_API_KEY:
+            missing.append("CLAUDE_API_KEY")
+        
+        if missing:
+            QMessageBox.warning(
+                self, 
+                "환경 설정 확인", 
+                f"다음 환경변수가 설정되지 않았습니다:\n{', '.join(missing)}\n\n"
+                ".env 파일을 확인해주세요."
+            )
+    
+    def _set_language(self, source: str, target: str):
+        """언어 설정"""
+        self.source_lang = source
+        self.target_lang = target
+        
+        # 모든 버튼 비활성화 스타일로 초기화
+        for btn in [self.ko_to_en_btn, self.en_to_ko_btn, self.ko_only_btn, self.en_only_btn]:
+            btn.set_toggle_style(False)
+        
+        # 선택된 버튼만 활성화 스타일 적용
+        if source == "ko" and target == "en":
+            self.ko_to_en_btn.set_toggle_style(True)
+        elif source == "en" and target == "ko":
+            self.en_to_ko_btn.set_toggle_style(True)
+        elif source == "ko" and target == "ko":
+            self.ko_only_btn.set_toggle_style(True)
+        elif source == "en" and target == "en":
+            self.en_only_btn.set_toggle_style(True)
+        
+        # 번역 버튼 활성/비활성 처리
+        if self.source_lang == self.target_lang:
+            self.translate_btn.setEnabled(False)
         else:
-            self.resume_btn.setChecked(False)
-            self.portfolio_btn.setChecked(True)
-            self.resume_btn.setStyleSheet("background: black; color: white;")
-            self.portfolio_btn.setStyleSheet("background: white; color: black;")
-
-    def on_ko2en_toggle(self):
-        self.lang_direction = "ko2en"
-        self.update_lang_ui()
-
-    def on_en2ko_toggle(self):
-        self.lang_direction = "en2ko"
-        self.update_lang_ui()
-
-    def update_lang_ui(self):
-        if self.lang_direction == "ko2en":
-            self.ko2en_btn.setChecked(True)
-            self.en2ko_btn.setChecked(False)
-            self.ko2en_btn.setStyleSheet("background: #b6fcd5; color: black;")  # 연초록
-            self.en2ko_btn.setStyleSheet("background: #eee8d5; color: black;")  # 연주황(비활성)
+            self.translate_btn.setEnabled(True)
+        
+        self._update_status_display()
+    
+    def _update_status_display(self):
+        """상태 표시 업데이트 (선택된 페이지 수, 언어)"""
+        selected = self.page_list.selectedItems()
+        if selected:
+            titles = [item.text() for item in selected]
+            page_info = ", ".join(titles)
         else:
-            self.ko2en_btn.setChecked(False)
-            self.en2ko_btn.setChecked(True)
-            self.ko2en_btn.setStyleSheet("background: #eee8d5; color: black;")  # 연초록(비활성)
-            self.en2ko_btn.setStyleSheet("background: #ffe4b5; color: black;")  # 연주황
+            page_info = "(페이지 미선택)"
+        if self.source_lang == self.target_lang:
+            lang_info = f"{self.source_lang.upper()} 출력"
+        else:
+            lang_info = f"{self.source_lang.upper()} → {self.target_lang.upper()}"
+        self.status_label.setText(f"선택: {page_info} | {lang_info}")
+    
+    def _start_workflow(self, workflow_type: str):
+        """워크플로우 시작"""
+        if self.worker_thread and self.worker_thread.isRunning():
+            QMessageBox.information(self, "알림", "이미 작업이 진행 중입니다.")
+            return
+        
+        # 선택된 페이지 id 목록 추출
+        selected_items = self.page_list.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "알림", "최소 1개 이상의 Notion 페이지를 선택하세요.")
+            return
+        selected_page_ids = [item.data(Qt.UserRole) for item in selected_items]
+        
+        # 설정 생성 (doc_type 등은 더 이상 사용하지 않음)
+        config = create_config(
+            doc_type="custom",  # 의미 없음, placeholder
+            source_lang=self.source_lang,
+            target_lang=self.target_lang,
+            with_translation=(self.source_lang != self.target_lang and workflow_type in ['translate', 'full'])
+        )
+        config.selected_page_ids = selected_page_ids  # config에 동적으로 추가
+        
+        # 워커 스레드 생성 및 시작
+        self.worker_thread = WorkerThread(config, workflow_type)
+        self.worker_thread.progress_updated.connect(self.progress_bar.setValue)
+        self.worker_thread.status_updated.connect(self.status_label.setText)
+        self.worker_thread.finished.connect(self._on_workflow_finished)
+        self.worker_thread.error_occurred.connect(self._on_workflow_error)
+        
+        # UI 상태 변경
+        self._set_buttons_enabled(False)
+        self.progress_bar.setValue(0)
+        
+        self.worker_thread.start()
+    
+    def _on_workflow_finished(self, result: str):
+        """워크플로우 완료 처리"""
+        self.status_label.setText("✅ 완료!")
+        self.result_text.append(f"[{self._get_timestamp()}] {result}")
+        self._set_buttons_enabled(True)
+        
+        QMessageBox.information(self, "완료", f"작업이 완료되었습니다!\n\n{result}")
+    
+    def _on_workflow_error(self, error_msg: str):
+        """워크플로우 에러 처리"""
+        self.status_label.setText("❌ 오류 발생")
+        self.result_text.append(f"[{self._get_timestamp()}] 오류: {error_msg}")
+        self._set_buttons_enabled(True)
+        
+        QMessageBox.critical(self, "오류", f"작업 중 오류가 발생했습니다:\n\n{error_msg}")
+    
+    def _set_buttons_enabled(self, enabled: bool):
+        """버튼 활성화 상태 설정"""
+        self.translate_btn.setEnabled(enabled)
+        self.export_btn.setEnabled(enabled)
+        self.full_btn.setEnabled(enabled)
+    
+    def _open_result_folder(self):
+        """결과 폴더 열기"""
+        result_dir = Path(".etc")
+        if result_dir.exists():
+            os.startfile(str(result_dir))  # Windows
+            # macOS: os.system(f"open {result_dir}")
+            # Linux: os.system(f"xdg-open {result_dir}")
+        else:
+            QMessageBox.information(self, "알림", "결과 폴더가 아직 생성되지 않았습니다.")
+    
+    def _clear_results(self):
+        """결과 텍스트 지우기"""
+        self.result_text.clear()
+        self.progress_bar.setValue(0)
+        self.status_label.setText("대기 중...")
+    
+    def _get_timestamp(self) -> str:
+        """현재 시간 스탬프 반환"""
+        from datetime import datetime
+        return datetime.now().strftime("%H:%M:%S")
 
-    # --- 실행 버튼 핸들러 ---
-    def on_run(self):
-        # 현재 상태에 따라 분기
-        if self.resume_or_portfolio == "resume" and self.lang_direction == "ko2en":
-            self.on_translate()  # 예시: 한->영 이력서 번역
-        elif self.resume_or_portfolio == "resume" and self.lang_direction == "en2ko":
-            self.on_improve()    # 예시: 영->한 이력서 개선
-        elif self.resume_or_portfolio == "portfolio" and self.lang_direction == "ko2en":
-            self.on_export()     # 예시: 한->영 포폴 출력
-        elif self.resume_or_portfolio == "portfolio" and self.lang_direction == "en2ko":
-            self.on_export()     # 예시: 영->한 포폴 출력
-        # 실제로는 각 조합에 맞는 함수로 연결
 
-    # 기존 함수 재활용 (실제 기능에 맞게 구현)
-    def on_translate(self):
-        print("이력서 한->영 번역 실행")
-        # 기존 번역 함수 호출
+def extract_page_title(page_info: dict) -> str:
+    try:
+        properties = page_info.get('properties', {})
+        for prop_name, prop_data in properties.items():
+            if prop_data.get('type') == 'title':
+                title_array = prop_data.get('title', [])
+                if title_array:
+                    return ''.join([item['plain_text'] for item in title_array])
+        return "Untitled"
+    except Exception as e:
+        print(f"제목 추출 중 오류: {e}")
+        return "Untitled"
 
-    def on_improve(self):
-        print("이력서 영->한 개선 실행")
-        # 기존 개선 함수 호출
 
-    def on_export(self):
-        print("포폴 출력 실행")
-        # 기존 출력 함수 호출
+def main():
+    """메인 함수"""
+    app = QApplication(sys.argv)
+    
+    # 애플리케이션 설정
+    app.setApplicationName("이력서/포폴 자동화 툴")
+    app.setApplicationVersion("2.0")
+    
+    # 다크 모드 지원 (선택사항)
+    # app.setStyle("Fusion")
+    
+    # 메인 윈도우 생성 및 표시
+    window = MainWindow()
+    window.show()
+    
+    # 애플리케이션 실행
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    main()
