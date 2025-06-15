@@ -1,3 +1,5 @@
+# 모든 한글 주석과 from, import 구문을 삭제합니다.
+
 import os
 import asyncio
 import sys
@@ -9,14 +11,16 @@ from urllib.parse import urljoin
 from notion_client import AsyncClient
 from playwright.async_api import async_playwright
 from dotenv import load_dotenv
-from config import NOTION_API_KEY, CLAUDE_API_KEY
-from PySide6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QPushButton, QLabel, QSizePolicy, QProgressBar, QTextEdit, QGroupBox, QMessageBox, QFileDialog, QListWidget, QListWidgetItem, QAbstractItemView, QLineEdit
+from config import NOTION_API_KEY, CLAUDE_API_KEY, PAGE_ID
+from PySide6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QPushButton, QLabel, QSizePolicy, QProgressBar, QTextEdit, QTextBrowser, QGroupBox, QMessageBox, QFileDialog, QListWidget, QListWidgetItem, QAbstractItemView, QLineEdit, QSplitter, QCheckBox
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import QFont, QPalette, QColor
-from core_engine import ProcessingConfig, NotionPortfolioEngine, create_config
+from translate_engine import TranslateEngine, TranslationConfig
+from html2pdf_engine import HTML2PDFEngine
 from typing import Optional
 from pathlib import Path
 import threading
+from core_engine import NotionEngine
 
 # --- 1. 설정: .env 파일에서 환경변수 불러오기 ---
 load_dotenv()
@@ -389,16 +393,17 @@ def estimate_column_widths_with_pixel_heuristic(table_rows):
 
 
 async def blocks_to_html(blocks, notion_client):
-    """Notion 블록 리스트를 HTML로 변환합니다."""
     if not blocks:
-        return ""
-    
+        return "<p style='color:#888'>블록 데이터가 없습니다.</p>"
     html_parts = []
     i = 0
     after_project_h2 = False
     h3_after_project_count = 0
     while i < len(blocks):
         block = blocks[i]
+        if not block or 'type' not in block:
+            i += 1
+            continue
         block_type = block['type']
         
         # 리스트 아이템 처리
@@ -545,8 +550,11 @@ async def fetch_all_child_blocks(notion, block_id):
     blocks = []
     try:
         response = await notion.blocks.children.list(block_id=block_id, page_size=100)
-        blocks.extend(response['.etc'])
-        
+        results = response.get('results')
+        if not results:
+            print(f"[경고] 블록이 없습니다: {block_id}")
+            return []
+        blocks.extend(results)
         next_cursor = response.get('next_cursor')
         while next_cursor:
             response = await notion.blocks.children.list(
@@ -554,18 +562,18 @@ async def fetch_all_child_blocks(notion, block_id):
                 page_size=100, 
                 start_cursor=next_cursor
             )
-            blocks.extend(response['.etc'])
+            results = response.get('results')
+            if not results:
+                break
+            blocks.extend(results)
             next_cursor = response.get('next_cursor')
-
     except Exception as e:
         print(f"블록 가져오기 오류: {e}")
         return []
-
     # 자식 블록 재귀적으로 가져오기
     for block in blocks:
-        if block.get('has_children'):
-            block['children'] = await fetch_all_child_blocks(notion, block['id'])
-    
+        if block and block.get('has_children'):
+            block['children'] = await fetch_all_child_blocks(notion, block.get('id'))
     return blocks
 
 
@@ -628,11 +636,13 @@ class WorkerThread(QThread):
     finished = Signal(str)          # 작업 완료 (결과 경로)
     error_occurred = Signal(str)    # 에러 발생
     
-    def __init__(self, config: ProcessingConfig, workflow_type: str):
+    def __init__(self, config, workflow_type: str):
         super().__init__()
         self.config = config
         self.workflow_type = workflow_type  # 'translate', 'export', 'full'
-        self.engine = NotionPortfolioEngine()
+        self.notion_engine = NotionEngine()
+        self.translate_engine = TranslateEngine()
+        self.html2pdf_engine = HTML2PDFEngine()
     
     def run(self):
         """워커 스레드 실행 메인 함수"""
@@ -665,7 +675,15 @@ class WorkerThread(QThread):
         self.status_updated.emit("🔄 번역 작업 시작...")
         self.progress_updated.emit(10)
         
-        result = await self.engine.translate_and_enhance(self.config)
+        # 예시: 첫 번째 페이지의 제목만 번역
+        page_id = self.config["selected_page_ids"][0]
+        page_info = await self.notion_engine.notion.pages.retrieve(page_id=page_id)
+        title = await self.notion_engine.extract_page_title(page_info)
+        result = await self.translate_engine.translate_and_enhance(title, {
+            "source_lang": self.config["source_lang"],
+            "target_lang": self.config["target_lang"],
+            "with_translation": self.config["with_translation"]
+        })
         self.progress_updated.emit(100)
         
         return f"번역 완료: {result}" if result else None
@@ -684,26 +702,35 @@ class WorkerThread(QThread):
         self.status_updated.emit("📋 PDF 생성 중...")
         self.progress_updated.emit(80)
         
-        result = await self.engine.export_to_pdf(self.config)
+        page_id = self.config["selected_page_ids"][0]
+        page_info = await self.notion_engine.notion.pages.retrieve(page_id=page_id)
+        title = await self.notion_engine.extract_page_title(page_info)
+        blocks = await self.notion_engine.fetch_all_child_blocks(page_id)
+        # blocks_to_html 함수는 main.py에 있으므로 import해서 사용해야 함
+        from main import blocks_to_html
+        content_html = await blocks_to_html(blocks, self.notion_engine.notion)
+        html = self.html2pdf_engine.generate_full_html(title, content_html)
+        output_filename = f"{title}.pdf"
+        pdf_path = await self.html2pdf_engine.html_to_pdf(html, output_filename)
         self.progress_updated.emit(100)
         
-        return result
+        return pdf_path
     
     async def _run_full_workflow(self) -> Optional[str]:
         """전체 워크플로우 실행"""
         self.status_updated.emit("🚀 전체 프로세스 시작...")
         self.progress_updated.emit(5)
         
-        if self.config.with_translation:
+        if self.config["with_translation"]:
             self.status_updated.emit("🔄 번역 작업 중...")
             self.progress_updated.emit(20)
-            await self.engine.translate_and_enhance(self.config)
+            await self._run_translation()
             self.progress_updated.emit(50)
         
         self.status_updated.emit("📄 PDF 생성 중...")
         self.progress_updated.emit(70)
         
-        result = await self.engine.full_workflow(self.config)
+        result = await self._run_export()
         self.progress_updated.emit(100)
         
         return result
@@ -793,26 +820,25 @@ class MainWindow(QMainWindow):
         
     def _init_ui(self):
         """UI 구성요소 초기화"""
+        main_hbox = QHBoxLayout()
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        
-        # 메인 레이아웃
-        main_layout = QVBoxLayout(central_widget)
-        main_layout.setSpacing(20)
-        main_layout.setContentsMargins(30, 30, 30, 30)
-        
+        central_widget.setLayout(main_hbox)
+        # 좌측: 기존 컨트롤들 (VBox)
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setSpacing(20)
+        left_layout.setContentsMargins(30, 30, 30, 30)
         # 제목
         title_label = QLabel("이력서/포폴 자동화 툴")
         title_label.setFont(QFont("Arial", 18, QFont.Weight.Bold))
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title_label.setStyleSheet("color: #1f2937; margin-bottom: 10px;")
-        main_layout.addWidget(title_label)
-        
+        left_layout.addWidget(title_label)
         # Notion 페이지 목록 그룹
         page_group = self._create_page_list_group()
-        main_layout.addWidget(page_group)
-        
-        # 언어/실행 그룹을 한 줄에 배치
+        left_layout.addWidget(page_group)
+        # 언어/실행/옵션 그룹 한 줄
         row_layout = QHBoxLayout()
         lang_group = self._create_language_group()
         action_group, full_btn = self._create_action_group_with_full_btn()
@@ -821,21 +847,39 @@ class MainWindow(QMainWindow):
         row_layout.addWidget(action_group, 2)
         row_layout.addWidget(option_group, 2)
         row_layout.addWidget(full_btn, 1)
-        main_layout.addLayout(row_layout)
-        
+        left_layout.addLayout(row_layout)
         # 진행 상황 표시
         progress_group = self._create_progress_group()
-        main_layout.addWidget(progress_group)
-        
+        left_layout.addWidget(progress_group)
         # 결과 표시 영역
         result_group = self._create_result_group()
-        main_layout.addWidget(result_group)
-        
-        # 스트레치 추가
-        main_layout.addStretch()
-        
+        left_layout.addWidget(result_group)
+        left_layout.addStretch()
         # 모든 위젯 생성 후 상태 초기화
-        self._set_language("ko", "en")
+        self._set_language("ko", "ko")  # '한'만 디폴트
+        self.export_btn.setEnabled(True)
+        self.export_btn.set_primary_style()
+        self.translate_btn.setEnabled(False)
+        self.translate_btn.setStyleSheet("")
+        main_hbox.addWidget(left_widget, 2)
+        # 우측: 미리보기/번역 결과
+        preview_widget = QWidget()
+        preview_layout = QVBoxLayout(preview_widget)
+        self.splitter = QSplitter()
+        self.original_preview = QTextBrowser()
+        self.original_preview.setOpenExternalLinks(True)
+        self.translated_preview = QTextEdit()
+        self.translated_preview.setReadOnly(True)
+        self.splitter.addWidget(self.original_preview)
+        self.splitter.addWidget(self.translated_preview)
+        preview_layout.addWidget(self.splitter)
+        self.sync_scroll_checkbox = QCheckBox("Sync Scroll")
+        self.sync_scroll_checkbox.stateChanged.connect(self.toggle_sync_scroll)
+        preview_layout.addWidget(self.sync_scroll_checkbox)
+        main_hbox.addWidget(preview_widget, 3)
+        # 페이지 선택/번역 버튼 이벤트 연결
+        self.page_list.itemSelectionChanged.connect(self._on_page_selected)
+        self.translate_btn.clicked.connect(self._on_translate_clicked)
     
     def _create_page_list_group(self) -> QGroupBox:
         """Notion 페이지 목록 그룹 생성"""
@@ -1033,11 +1077,9 @@ class MainWindow(QMainWindow):
         """언어 설정"""
         self.source_lang = source
         self.target_lang = target
-        
         # 모든 버튼 비활성화 스타일로 초기화
         for btn in [self.ko_to_en_btn, self.en_to_ko_btn, self.ko_only_btn, self.en_only_btn]:
             btn.set_toggle_style(False)
-        
         # 선택된 버튼만 활성화 스타일 적용
         if source == "ko" and target == "en":
             self.ko_to_en_btn.set_toggle_style(True)
@@ -1047,13 +1089,17 @@ class MainWindow(QMainWindow):
             self.ko_only_btn.set_toggle_style(True)
         elif source == "en" and target == "en":
             self.en_only_btn.set_toggle_style(True)
-        
-        # 번역 버튼 활성/비활성 처리
+        # 버튼 활성/비활성 및 스타일 처리
         if self.source_lang == self.target_lang:
             self.translate_btn.setEnabled(False)
+            self.translate_btn.setStyleSheet("")
+            self.export_btn.setEnabled(True)
+            self.export_btn.set_primary_style()
         else:
+            self.export_btn.setEnabled(False)
+            self.export_btn.setStyleSheet("")
             self.translate_btn.setEnabled(True)
-        
+            self.translate_btn.set_primary_style()
         self._update_status_display()
     
     def _update_status_display(self):
@@ -1075,34 +1121,25 @@ class MainWindow(QMainWindow):
         if self.worker_thread and self.worker_thread.isRunning():
             QMessageBox.information(self, "알림", "이미 작업이 진행 중입니다.")
             return
-        
-        # 선택된 페이지 id 목록 추출
         selected_items = self.page_list.selectedItems()
         if not selected_items:
             QMessageBox.warning(self, "알림", "최소 1개 이상의 Notion 페이지를 선택하세요.")
             return
         selected_page_ids = [item.data(Qt.UserRole) for item in selected_items]
-        
-        # 설정 생성 (doc_type 등은 더 이상 사용하지 않음)
-        config = create_config(
-            doc_type="custom",  # 의미 없음, placeholder
-            source_lang=self.source_lang,
-            target_lang=self.target_lang,
-            with_translation=(self.source_lang != self.target_lang and workflow_type in ['translate', 'full'])
-        )
-        config.selected_page_ids = selected_page_ids  # config에 동적으로 추가
-        
-        # 워커 스레드 생성 및 시작
+        config = {
+            "doc_type": "custom",
+            "source_lang": self.source_lang,
+            "target_lang": self.target_lang,
+            "with_translation": (self.source_lang != self.target_lang and workflow_type in ['translate', 'full']),
+            "selected_page_ids": selected_page_ids
+        }
         self.worker_thread = WorkerThread(config, workflow_type)
         self.worker_thread.progress_updated.connect(self.progress_bar.setValue)
-        self.worker_thread.status_updated.connect(self.status_label.setText)
+        self.worker_thread.status_updated.connect(lambda msg: (self.status_label.setText(msg), self.result_text.append(self._mask_id(msg))))
         self.worker_thread.finished.connect(self._on_workflow_finished)
         self.worker_thread.error_occurred.connect(self._on_workflow_error)
-        
-        # UI 상태 변경
         self._set_buttons_enabled(False)
         self.progress_bar.setValue(0)
-        
         self.worker_thread.start()
     
     def _on_workflow_finished(self, result: str):
@@ -1148,15 +1185,73 @@ class MainWindow(QMainWindow):
         from datetime import datetime
         return datetime.now().strftime("%H:%M:%S")
 
+    def _mask_id(self, msg):
+        # page_id 등 ID가 포함된 문자열을 마스킹
+        import re
+        return re.sub(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32}|[0-9a-f]{8})', '[ID]', msg)
+
+    def _on_page_selected(self):
+        import asyncio
+        from notion_client import AsyncClient
+        selected_items = self.page_list.selectedItems()
+        if selected_items:
+            page_id = selected_items[0].data(Qt.UserRole)
+            async def fetch_and_render():
+                notion = AsyncClient(auth=os.getenv("NOTION_API_KEY"))
+                try:
+                    page_info = await notion.pages.retrieve(page_id=page_id)
+                    from main import extract_page_title, fetch_all_child_blocks, blocks_to_html, get_styles
+                    title = extract_page_title(page_info)
+                    blocks = await fetch_all_child_blocks(notion, page_id)
+                    html = await blocks_to_html(blocks, notion)
+                    styles = get_styles()
+                    full_html = f"""
+                    <html><head><meta charset='utf-8'><style>{styles}</style></head><body><h1>{title}</h1>{html}</body></html>
+                    """
+                    self.original_preview.setHtml(full_html)
+                    # 하위 블록 개수 옵션 자동 입력
+                    child_count = len(blocks)
+                    self.start_edit.setText('0')
+                    self.end_edit.setText(str(max(0, child_count-1)))
+                except Exception as e:
+                    self.original_preview.setPlainText(f"[오류] {e}")
+            asyncio.run(fetch_and_render())
+        else:
+            self.original_preview.clear()
+        self.translated_preview.clear()
+
+    def _on_translate_clicked(self):
+        # 실제 번역 대신 더미 텍스트
+        orig = self.original_preview.toPlainText()
+        if orig:
+            self.translated_preview.setPlainText(f"[TRANSLATED]\n\n{orig}")
+        else:
+            self.translated_preview.setPlainText("")
+
+    def toggle_sync_scroll(self, state):
+        if state:
+            self.original_preview.verticalScrollBar().valueChanged.connect(
+                self.translated_preview.verticalScrollBar().setValue)
+            self.translated_preview.verticalScrollBar().valueChanged.connect(
+                self.original_preview.verticalScrollBar().setValue)
+        else:
+            try:
+                self.original_preview.verticalScrollBar().valueChanged.disconnect()
+                self.translated_preview.verticalScrollBar().valueChanged.disconnect()
+            except Exception:
+                pass
+
 
 def extract_page_title(page_info: dict) -> str:
+    if not page_info:
+        return "페이지 정보 없음"
     try:
         properties = page_info.get('properties', {})
         for prop_name, prop_data in properties.items():
-            if prop_data.get('type') == 'title':
-                title_array = prop_data.get('title', [])
-                if title_array:
-                    return ''.join([item['plain_text'] for item in title_array])
+            if prop_data and prop_data.get('type') == 'title':
+                arr = prop_data.get('title', [])
+                if arr:
+                    return ''.join([item.get('plain_text', '') for item in arr if item])
         return "Untitled"
     except Exception as e:
         print(f"제목 추출 중 오류: {e}")
