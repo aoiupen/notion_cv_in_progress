@@ -3,9 +3,9 @@ import os
 from pathlib import Path
 from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, 
                              QLabel, QProgressBar, QTextEdit, QTextBrowser, QGroupBox, 
-                             QMessageBox, QListWidget, QListWidgetItem, QLineEdit, 
-                             QSplitter, QCheckBox, QAbstractItemView)
-from PySide6.QtGui import QFont, QPalette, QColor
+                             QMessageBox, QTreeWidget, QTreeWidgetItem, QLineEdit, 
+                             QSplitter, QCheckBox, QAbstractItemView, QHeaderView)
+from PySide6.QtGui import QFont, QPalette, QColor, QPixmap
 from PySide6.QtCore import Qt, QTimer, Slot, Signal
 
 from ui.widgets import ModernButton
@@ -32,6 +32,9 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         central_widget.setLayout(main_hbox)
+        
+        # 미리보기용 QPixmap을 저장할 변수
+        self.current_preview_pixmap = None
         
         left_widget = self._create_left_panel()
         main_hbox.addWidget(left_widget, 2)
@@ -66,10 +69,12 @@ class MainWindow(QMainWindow):
         preview_widget = QWidget()
         preview_layout = QVBoxLayout(preview_widget)
         self.splitter = QSplitter()
-        self.original_preview = QTextBrowser()
+        self.preview_label = QLabel("미리볼 페이지를 선택하세요.")
+        self.preview_label.setAlignment(Qt.AlignCenter)
+        
         self.translated_preview = QTextEdit()
         self.translated_preview.setReadOnly(True)
-        self.splitter.addWidget(self.original_preview)
+        self.splitter.addWidget(self.preview_label)
         self.splitter.addWidget(self.translated_preview)
         preview_layout.addWidget(self.splitter)
         return preview_widget
@@ -79,36 +84,46 @@ class MainWindow(QMainWindow):
         self.vm.pages_changed.connect(self.update_page_list)
         self.vm.status_updated.connect(self.status_label.setText)
         self.vm.progress_updated.connect(self.progress_bar.setValue)
-        self.vm.preview_updated.connect(self.original_preview.setHtml)
+        self.vm.preview_updated.connect(self.update_preview_image)
         self.vm.result_updated.connect(self.result_text.append)
         self.vm.child_count_updated.connect(self.update_option_ranges)
         self.vm.worker_error.connect(self.show_error_message)
 
         # View의 시그널 -> ViewModel의 슬롯
-        self.page_list.itemSelectionChanged.connect(self.on_page_selection_changed)
+        self.page_tree.itemSelectionChanged.connect(self.on_page_selection_changed)
         self.start_edit.editingFinished.connect(self.on_option_changed)
         self.end_edit.editingFinished.connect(self.on_option_changed)
         self.export_btn.clicked.connect(lambda: self.vm.start_export("pdf"))
         
     @Slot(list)
     def update_page_list(self, pages):
-        self.page_list.clear()
+        self.page_tree.clear()
         if not pages:
-            self.page_list.addItem("검색된 루트 페이지가 없습니다.")
+            item = QTreeWidgetItem(self.page_tree, ["검색된 루트 페이지가 없습니다."])
             return
-        for page in pages:
-            title = extract_page_title(page)
-            item = QListWidgetItem(f"{title} ({page['id'][:8]})")
-            item.setData(Qt.UserRole, page['id'])
-            self.page_list.addItem(item)
+            
+        for page_data in pages:
+            parent_item = QTreeWidgetItem(self.page_tree)
+            parent_item.setText(0, extract_page_title(page_data['page_info'], default_if_empty=True))
+            parent_item.setText(1, page_data['page_info']['id'])
+            parent_item.setData(0, Qt.UserRole, page_data['page_info']['id'])
+            
+            for child_page in page_data.get('children', []):
+                child_item = QTreeWidgetItem(parent_item)
+                child_item.setText(0, extract_page_title(child_page, default_if_empty=True))
+                child_item.setText(1, child_page['id'])
+                child_item.setData(0, Qt.UserRole, child_page['id'])
+        
+        # self.page_tree.expandAll()
+
             
     @Slot()
     def on_page_selection_changed(self):
-        selected_items = self.page_list.selectedItems()
+        selected_items = self.page_tree.selectedItems()
         if selected_items:
-            page_id = selected_items[0].data(Qt.UserRole)
-            # ViewModel에 페이지 선택 알림 (더 이상 스레드를 사용하지 않음)
-            self.vm.page_selected(page_id)
+            page_id = selected_items[0].data(0, Qt.UserRole)
+            page_title = selected_items[0].text(0)
+            self.vm.page_selected(page_id, page_title)
 
     @Slot(int)
     def update_option_ranges(self, count):
@@ -128,13 +143,40 @@ class MainWindow(QMainWindow):
     def show_error_message(self, message):
         QMessageBox.critical(self, "오류 발생", message)
 
+    def resizeEvent(self, event):
+        """창 크기 변경 시 미리보기 이미지 리사이즈"""
+        super().resizeEvent(event)
+        self.resize_preview_image()
+
+    def resize_preview_image(self):
+        """현재 QPixmap을 라벨 크기에 맞춰 비율을 유지하며 리사이즈"""
+        if self.current_preview_pixmap:
+            scaled_pixmap = self.current_preview_pixmap.scaled(
+                self.preview_label.size(), 
+                Qt.KeepAspectRatio, 
+                Qt.SmoothTransformation
+            )
+            self.preview_label.setPixmap(scaled_pixmap)
+
+    @Slot(str)
+    def update_preview_image(self, image_path):
+        if image_path:
+            self.current_preview_pixmap = QPixmap(image_path)
+            self.resize_preview_image()
+        else:
+            self.current_preview_pixmap = None
+            self.preview_label.setText("미리보기를 생성하지 못했습니다.")
+
     # --- UI Group Creation Methods ---
     def _create_page_list_group(self) -> QGroupBox:
         group = QGroupBox("📄 Notion 페이지 선택")
         layout = QVBoxLayout(group)
-        self.page_list = QListWidget()
-        self.page_list.setSelectionMode(QAbstractItemView.SingleSelection)
-        layout.addWidget(self.page_list)
+        self.page_tree = QTreeWidget()
+        self.page_tree.setColumnCount(2)
+        self.page_tree.setHeaderLabels(["페이지 제목", "ID"])
+        self.page_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.page_tree.setSelectionMode(QAbstractItemView.SingleSelection)
+        layout.addWidget(self.page_tree)
         return group
 
     def _create_language_group(self) -> QGroupBox:

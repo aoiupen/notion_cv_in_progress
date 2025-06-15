@@ -21,7 +21,7 @@ def get_styles():
         h3 { font-size: 1.2em; margin: 0.9em 0 0.3em 0; }
         """
 
-def extract_page_title(page_info):
+def extract_page_title(page_info, default_if_empty=False):
     """Notion 페이지 정보에서 제목을 추출합니다."""
     try:
         properties = page_info.get('properties', {})
@@ -29,11 +29,14 @@ def extract_page_title(page_info):
             if prop_data.get('type') == 'title':
                 title_array = prop_data.get('title', [])
                 if title_array:
-                    return ''.join([item['plain_text'] for item in title_array])
-        return ""
+                    plain_text = ''.join([item['plain_text'] for item in title_array]).strip()
+                    if plain_text:
+                        return plain_text
+        
+        return "새 페이지" if default_if_empty else ""
     except Exception as e:
         print(f"제목 추출 중 오류: {e}")
-        return ""
+        return "새 페이지" if default_if_empty else ""
 
 def is_youtube_url(url):
     return (

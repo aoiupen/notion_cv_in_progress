@@ -37,8 +37,7 @@ class HTML2PDFEngine:
     <style>{css_styles}</style>
 </head>
 <body>
-    <h1>{title}</h1>
-    <div style='height: 1.5em;'></div>
+    {'<h1>' + title + '</h1><div style="height: 1.5em;"></div>' if title else ''}
     {content}
 </body>
 </html>

@@ -1,3 +1,7 @@
+import asyncio
+import base64
+import uuid
+from pathlib import Path
 from utils.helpers import *
 
 # 표 스타일 매핑 딕셔너리
@@ -156,24 +160,20 @@ async def get_synced_block_original_and_top_parent(notion, block):
 async def blocks_to_html(blocks, notion_client):
     if not blocks:
         return ""
+    
     html_parts = []
     i = 0
     while i < len(blocks):
         block = blocks[i]
         block_type = block['type']
-        if block_type == 'synced_block':
-            synced_children = block.get('children')
-            synced_block_content = await blocks_to_html(synced_children, notion_client) if synced_children else ""
-            html_parts.append(f"<div class='synced-block-container'>{synced_block_content}</div>")
-            i += 1
-            continue
+
         if block_type in ['bulleted_list_item', 'numbered_list_item']:
             list_tag = 'ul' if block_type == 'bulleted_list_item' else 'ol'
             list_items = []
             j = i
             while j < len(blocks) and blocks[j]['type'] == block_type:
                 current_block = blocks[j]
-                item_content = rich_text_to_html(current_block[block_type]['rich_text'], process_nested_bullets=True)
+                item_content = rich_text_to_html(current_block[block_type]['rich_text'])
                 if current_block.get('has_children') and current_block.get('children'):
                     item_content += await blocks_to_html(current_block['children'], notion_client)
                 list_items.append(f"<li>{item_content}</li>")
@@ -181,6 +181,7 @@ async def blocks_to_html(blocks, notion_client):
             html_parts.append(f"<{list_tag}>{''.join(list_items)}</{list_tag}>")
             i = j
             continue
+
         block_html = ""
         if block_type == 'heading_1':
             block_html = f"<h1>{rich_text_to_html(block['heading_1']['rich_text'])}</h1>"
@@ -196,7 +197,7 @@ async def blocks_to_html(blocks, notion_client):
         elif block_type == 'image':
             image_data = block['image']
             url = image_data.get('file', {}).get('url') or image_data.get('external', {}).get('url', '')
-            block_html = f"<img src='{url}' alt='Image' class='notion-block-image'>"
+            block_html = f"<img src='{url}' alt='Image' class='notion-block-image' style='max-width: 100%; height: auto;'>"
         elif block_type == 'code':
             code_text = rich_text_to_html(block['code']['rich_text'])
             language = block['code'].get('language', '')
@@ -232,8 +233,7 @@ async def blocks_to_html(blocks, notion_client):
             callout_text = rich_text_to_html(callout['rich_text'])
             children_html = await blocks_to_html(block['children'], notion_client) if block.get('has_children') else ''
             block_html = f"<div class='callout'>{icon_html}{callout_text}{children_html}</div>"
-        else:
-            print(f"경고: 지원되지 않는 블록 타입: {block_type}")
+
         html_parts.append(block_html)
         i += 1
     return '\n'.join(html_parts)

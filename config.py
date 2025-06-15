@@ -89,8 +89,6 @@ CLAUDE_API_KEY=your_claude_api_key_here
 # Integration이 접근할 수 있는 모든 페이지를 자동으로 찾습니다.
 
 # 선택적 설정들 (기본값 사용 가능)
-# OUTPUT_DIR=.etc
-# TEMP_DIR=.etc/temp
 """
     
     env_file = Path(".env.example")
