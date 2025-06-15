@@ -12,7 +12,7 @@ from notion_client import AsyncClient
 from notion_client.errors import APIResponseError
 from playwright.async_api import async_playwright
 from dotenv import load_dotenv
-from config import NOTION_API_KEY, CLAUDE_API_KEY, PAGE_ID
+from config import NOTION_API_KEY, CLAUDE_API_KEY
 from PySide6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QPushButton, QLabel, QSizePolicy, QProgressBar, QTextEdit, QTextBrowser, QGroupBox, QMessageBox, QFileDialog, QListWidget, QListWidgetItem, QAbstractItemView, QLineEdit, QSplitter, QCheckBox
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import QFont, QPalette, QColor
@@ -678,55 +678,24 @@ class WorkerThread(QThread):
         self.progress_updated.emit(10)
         
         page_id = self.config["selected_page_ids"][0]
-        
-        self.status_updated.emit("📥 Notion 데이터 가져오는 중...")
-        self.progress_updated.emit(30)
-        
-        notion = AsyncClient(auth=NOTION_API_KEY)
-        page_info = await notion.pages.retrieve(page_id=page_id)
-        title = extract_page_title(page_info)
-        blocks = await fetch_all_child_blocks(notion, page_id)
-        
-        self.status_updated.emit("🔄 HTML 변환 중...")
-        self.progress_updated.emit(60)
-        
-        content_html = await blocks_to_html(blocks, notion)
-        styles = get_styles()
-        
-        full_html = f"""
-        <!DOCTYPE html>
-        <html lang=\"ko\">
-        <head>
-            <meta charset=\"UTF-8\">
-            <title>{title}</title>
-            <style>{styles}</style>
-        </head>
-        <body>
-            <h1>{title}</h1>
-            <div style='height: 1.5em;'></div>
-            {content_html}
-        </body>
-        </html>
-        """
-        
-        self.status_updated.emit("📋 PDF 생성 중...")
-        self.progress_updated.emit(80)
-        
-        os.makedirs(".etc", exist_ok=True)
-        pdf_path = os.path.join(".etc", f"{title}.pdf")
-        
+        page_info = await self.notion_engine.notion.pages.retrieve(page_id=page_id)
+        title = await self.notion_engine.extract_page_title(page_info)
+        # 직속 children만 가져오기
+        children_resp = await self.notion_engine.notion.blocks.children.list(block_id=page_id, page_size=100)
+        children = children_resp.get('results', [])
+        # 시작/끝 범위 적용
         try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                page = await browser.new_page()
-                await page.set_content(full_html, wait_until="networkidle")
-                await page.pdf(path=pdf_path, format="A4", print_background=True)
-                await browser.close()
-            
-            self.progress_updated.emit(100)
-            return os.path.abspath(pdf_path)
-        except Exception as e:
-            raise Exception(f"PDF 생성 실패: {e}")
+            start = int(self.parent().start_edit.text())
+            end = int(self.parent().end_edit.text())
+        except Exception:
+            start, end = 0, len(children)-1
+        blocks_to_use = children[start:end+1]
+        content_html = await blocks_to_html(blocks_to_use, self.notion_engine.notion)
+        html = self.html2pdf_engine.generate_full_html(title, content_html)
+        output_filename = f"{title}.pdf"
+        pdf_path = await self.html2pdf_engine.html_to_pdf(html, output_filename)
+        self.progress_updated.emit(100)
+        return pdf_path
     
     async def _run_full_workflow(self) -> Optional[str]:
         """전체 워크플로우 실행"""
@@ -919,10 +888,15 @@ class MainWindow(QMainWindow):
                     return "Untitled"
                 except Exception:
                     return "Untitled"
-            async def fetch_pages():
+            async def fetch_root_pages():
                 result = await notion.search(filter={"property": "object", "value": "page"})
-                return result["results"]
-            pages = asyncio.run(fetch_pages())
+                pages = []
+                for page in result["results"]:
+                    parent = page.get("parent", {})
+                    if parent.get("type") in ("workspace", "user"):
+                        pages.append(page)
+                return pages
+            pages = asyncio.run(fetch_root_pages())
             self.page_list.clear()
             for page in pages:
                 title = extract_title(page)
@@ -1206,18 +1180,22 @@ class MainWindow(QMainWindow):
             async def fetch_and_render():
                 notion = AsyncClient(auth=os.getenv("NOTION_API_KEY"))
                 try:
+                    # 직속 children만 가져오기
+                    children_resp = await notion.blocks.children.list(block_id=page_id, page_size=100)
+                    children = children_resp.get('results', [])
+                    child_count = len(children)
+                    self.start_edit.setText('0')
+                    self.end_edit.setText(str(max(0, child_count-1)))
+                    # 미리보기 등 기존 코드
+                    from main import extract_page_title, blocks_to_html, get_styles
                     page_info = await notion.pages.retrieve(page_id=page_id)
                     title = extract_page_title(page_info)
-                    blocks = await fetch_all_child_blocks(notion, page_id)
-                    html = await blocks_to_html(blocks, notion)
+                    html = await blocks_to_html(children, notion)
                     styles = get_styles()
                     full_html = f"""
                     <html><head><meta charset='utf-8'><style>{styles}</style></head><body><h1>{title}</h1>{html}</body></html>
                     """
                     self.original_preview.setHtml(full_html)
-                    child_count = len(blocks)
-                    self.start_edit.setText('0')
-                    self.end_edit.setText(str(max(0, child_count-1)))
                 except Exception as e:
                     self.original_preview.setPlainText(f"[오류] {e}")
             asyncio.run(fetch_and_render())
