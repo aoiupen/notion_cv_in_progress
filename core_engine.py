@@ -139,6 +139,56 @@ class NotionEngine:
             print(f"제목 추출 중 오류: {e}")
             return "Untitled"
 
+    async def get_synced_block_original(self, block: dict) -> Optional[dict]:
+        """동기화 블록의 원본 블록을 재귀적으로 찾습니다."""
+        if block.get('type') == 'synced_block':
+            synced_from = block['synced_block'].get('synced_from')
+            if synced_from and 'block_id' in synced_from:
+                try:
+                    original_block = await self.notion.blocks.retrieve(synced_from['block_id'])
+                    return await self.get_synced_block_original(original_block)
+                except Exception as e:
+                    print(f"동기화 원본 블록({synced_from.get('block_id')}) 접근 실패: {e}")
+                    return None
+        return block
+
+    async def get_synced_block_original_and_top_parent(self, notion, block):
+        current_block = block
+        # 1. synced_block 사본이면 원본을 재귀적으로 추적
+        if current_block.get('type') == 'synced_block':
+            synced_from = current_block['synced_block'].get('synced_from')
+            if synced_from and 'block_id' in synced_from:
+                try:
+                    original_block = await notion.blocks.retrieve(synced_from['block_id'])
+                    # 재귀 호출하여 원본 블록의 원본 및 최상위 부모를 찾습니다.
+                    return await self.get_synced_block_original_and_top_parent(notion, original_block)
+                except Exception as e:
+                    print(f"[get_synced_block] 원본 블록 접근 실패 (ID: {synced_from.get('block_id', '알 수 없음')}): 코드={getattr(e, 'code', 'N/A')}, 상세={e}")
+                    print(f"[get_synced_block] 원본 블록을 찾을 수 없거나 접근 권한이 없습니다. (ID: {synced_from.get('block_id', '알 수 없음')})")
+                    return None, None, None
+        # 2. 최상위 부모 추적 (여기서는 필요없지만 레거시와 동일하게 반환)
+        block_id_to_find_parent = current_block['id']
+        parent = current_block.get('parent', {})
+        parent_type = parent.get('type')
+        while parent_type == 'block_id':
+            next_id = parent.get('block_id')
+            try:
+                parent_block = await notion.blocks.retrieve(next_id)
+                parent = parent_block.get('parent', {})
+                parent_type = parent.get('type')
+                block_id_to_find_parent = parent_block['id']
+            except Exception as e:
+                print(f"[get_synced_block] 부모 블록 추적 실패 (ID: {next_id}): {e}")
+                return current_block, None, None
+        if parent_type == 'page_id':
+            return current_block, parent.get('page_id'), 'page'
+        elif parent_type == 'database_id':
+            return current_block, parent.get('database_id'), 'database'
+        elif parent_type == 'workspace':
+            return current_block, block_id_to_find_parent, 'page'
+        else:
+            return current_block, None, None
+
     async def fetch_all_child_blocks(self, block_id: str) -> List[dict]:
         blocks = []
         try:
@@ -147,19 +197,30 @@ class NotionEngine:
             next_cursor = response.get('next_cursor')
             while next_cursor:
                 response = await self.notion.blocks.children.list(
-                    block_id=block_id,
-                    page_size=100,
-                    start_cursor=next_cursor
+                    block_id=block_id, page_size=100, start_cursor=next_cursor
                 )
                 blocks.extend(response['results'])
                 next_cursor = response.get('next_cursor')
         except Exception as e:
             print(f"블록 가져오기 오류: {e}")
             return []
+
+        processed_blocks = []
         for block in blocks:
-            if block.get('has_children'):
+            if block.get('type') == 'synced_block':
+                orig_block, _, _ = await self.get_synced_block_original_and_top_parent(self.notion, block)
+                if orig_block is None:
+                    print(f"경고: 동기화 블록 {block.get('id')}의 원본을 찾지 못해 건너뜁니다.")
+                    continue
+                if orig_block.get('has_children'):
+                    orig_block['children'] = await self.fetch_all_child_blocks(orig_block['id'])
+                processed_blocks.append(orig_block)
+            elif block.get('has_children'):
                 block['children'] = await self.fetch_all_child_blocks(block['id'])
-        return blocks
+                processed_blocks.append(block)
+            else:
+                processed_blocks.append(block)
+        return processed_blocks
 
 
 # 🧪 개별 페이지 권한 상황 테스트

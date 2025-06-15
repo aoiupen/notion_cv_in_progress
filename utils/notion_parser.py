@@ -167,6 +167,13 @@ async def blocks_to_html(blocks, notion_client):
         block = blocks[i]
         block_type = block['type']
 
+        if block_type == 'synced_block':
+            synced_children = block.get('children')
+            synced_block_content = await blocks_to_html(synced_children, notion_client) if synced_children else ""
+            html_parts.append(f"<div class='synced-block-container'>{synced_block_content}</div>")
+            i += 1
+            continue
+
         if block_type in ['bulleted_list_item', 'numbered_list_item']:
             list_tag = 'ul' if block_type == 'bulleted_list_item' else 'ol'
             list_items = []
