@@ -19,16 +19,24 @@
 
 ```
 notion_cv/
-├─ main.py                # 메인 실행 파일 (GUI)
-├─ config.py              # 환경변수 로딩
-├─ ui_rule_selector.py    # 규칙 선택 위젯
-├─ requirements.txt       # 필요 패키지 목록
-├─ mainsub/
-│  ├─ notion_extract.py   # 노션 이력서 추출 함수
-│  ├─ translate.py        # Claude API 번역 함수
-│  ├─ expand_resume.py    # 이력서 펼치기 함수
-│  └─ pdf_export.py       # PDF 저장 함수
-└─ .env                   # 환경변수 파일 (직접 생성 필요)
+├── main.py                    # 메인 진입점
+├── config.py                  # 환경설정
+├── core_engine.py            # Notion 엔진
+├── html2pdf_engine.py        # PDF 변환 엔진  
+├── translate_engine.py       # 번역 엔진
+├── portfolio_style.css       # 스타일시트
+├── requirements.txt          # 의존성
+├── ui/
+│   ├── main_window.py        # 메인 윈도우 (View)
+│   └── widgets.py           # 커스텀 위젯들
+├── viewmodels/
+│   └── main_viewmodel.py    # 메인 뷰모델 (ViewModel)
+├── utils/
+│   ├── helpers.py           # 헬퍼 함수들
+│   └── notion_parser.py     # Notion 파싱
+├── .gitignore
+├── .python-version
+└── README.md                # 환경변수 파일 (직접 생성 필요)
 ```
 
 ---

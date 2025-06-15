@@ -7,7 +7,6 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayo
                              QSplitter, QCheckBox, QAbstractItemView)
 from PySide6.QtGui import QFont, QPalette, QColor
 from PySide6.QtCore import Qt, QTimer, Slot, Signal
-import threading
 
 from ui.widgets import ModernButton
 from viewmodels.main_viewmodel import MainViewModel
@@ -25,8 +24,8 @@ class MainWindow(QMainWindow):
         self._init_ui()
         self._connect_signals()
         
-        # 초기 페이지 로드 요청
-        threading.Thread(target=self.vm.load_pages, daemon=True).start()
+        # ViewModel에 페이지 로드를 직접 요청 (더 이상 스레드를 사용하지 않음)
+        QTimer.singleShot(100, self.vm.load_pages)
 
     def _init_ui(self):
         main_hbox = QHBoxLayout()
@@ -83,6 +82,7 @@ class MainWindow(QMainWindow):
         self.vm.preview_updated.connect(self.original_preview.setHtml)
         self.vm.result_updated.connect(self.result_text.append)
         self.vm.child_count_updated.connect(self.update_option_ranges)
+        self.vm.worker_error.connect(self.show_error_message)
 
         # View의 시그널 -> ViewModel의 슬롯
         self.page_list.itemSelectionChanged.connect(self.on_page_selection_changed)
@@ -107,8 +107,8 @@ class MainWindow(QMainWindow):
         selected_items = self.page_list.selectedItems()
         if selected_items:
             page_id = selected_items[0].data(Qt.UserRole)
-            # ViewModel에 페이지 선택 알림
-            threading.Thread(target=lambda: self.vm.page_selected(page_id), daemon=True).start()
+            # ViewModel에 페이지 선택 알림 (더 이상 스레드를 사용하지 않음)
+            self.vm.page_selected(page_id)
 
     @Slot(int)
     def update_option_ranges(self, count):
@@ -123,6 +123,10 @@ class MainWindow(QMainWindow):
             self.vm.update_preview(start, end)
         except ValueError:
             pass # 숫자가 아닐 경우 무시
+
+    @Slot(str)
+    def show_error_message(self, message):
+        QMessageBox.critical(self, "오류 발생", message)
 
     # --- UI Group Creation Methods ---
     def _create_page_list_group(self) -> QGroupBox:
