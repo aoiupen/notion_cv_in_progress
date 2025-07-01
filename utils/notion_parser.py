@@ -158,53 +158,77 @@ async def get_synced_block_original_and_top_parent(notion, block):
         return current_block, None, None
 
 async def blocks_to_html(blocks, notion_client):
+    """Notion 블록 리스트를 HTML로 변환합니다. (페이지 분류/나누기 없이 순서대로 출력)"""
     if not blocks:
         return ""
-    
     html_parts = []
     i = 0
     while i < len(blocks):
         block = blocks[i]
         block_type = block['type']
 
+        # --- 동기화 블록 처리 로직 ---
         if block_type == 'synced_block':
+            print(f"DEBUG: blocks_to_html에서 synced_block 처리 중. ID: {block.get('id')}")
             synced_children = block.get('children')
-            synced_block_content = await blocks_to_html(synced_children, notion_client) if synced_children else ""
-            html_parts.append(f"<div class='synced-block-container'>{synced_block_content}</div>")
+            if synced_children:
+                print(f"DEBUG: 동기화 블록에 children 있음. 개수: {len(synced_children)}")
+                synced_block_content = await blocks_to_html(synced_children, notion_client)
+            else:
+                print(f"DEBUG: 동기화 블록에 children 없음 또는 비어있음. ID: {block.get('id')}")
+                synced_block_content = ""
+            block_html = f"<div class='synced-block-container'>{synced_block_content}</div>"
+            html_parts.append(block_html)
             i += 1
-            continue
+            continue # 다음 블록으로 넘어감
 
+        # 리스트 아이템 처리
         if block_type in ['bulleted_list_item', 'numbered_list_item']:
             list_tag = 'ul' if block_type == 'bulleted_list_item' else 'ol'
             list_items = []
             j = i
             while j < len(blocks) and blocks[j]['type'] == block_type:
                 current_block = blocks[j]
-                item_content = rich_text_to_html(current_block[block_type]['rich_text'])
+                item_content = rich_text_to_html(
+                    current_block[block_type]['rich_text'],
+                    process_nested_bullets=True
+                )
                 if current_block.get('has_children') and current_block.get('children'):
-                    item_content += await blocks_to_html(current_block['children'], notion_client)
+                    children_html = await blocks_to_html(current_block['children'], notion_client)
+                    item_content += children_html
                 list_items.append(f"<li>{item_content}</li>")
                 j += 1
-            html_parts.append(f"<{list_tag}>{''.join(list_items)}</{list_tag}>")
+            list_html = f"<{list_tag}>{''.join(list_items)}</{list_tag}>"
+            html_parts.append(list_html)
             i = j
             continue
 
+        # --- 기타 블록 타입 처리 (기존 로직 유지) ---
         block_html = ""
         if block_type == 'heading_1':
             block_html = f"<h1>{rich_text_to_html(block['heading_1']['rich_text'])}</h1>"
         elif block_type == 'heading_2':
-            block_html = f"<h2>{rich_text_to_html(block['heading_2']['rich_text'])}</h2>"
+            h2_text = rich_text_to_html(block['heading_2']['rich_text'])
+            block_html = f"<h2>{h2_text}</h2>"
         elif block_type == 'heading_3':
-            block_html = f"<h3>{rich_text_to_html(block['heading_3']['rich_text'])}</h3>"
+            h3_text = rich_text_to_html(block['heading_3']['rich_text'])
+            block_html = f"<h3>{h3_text}</h3>"
         elif block_type == 'paragraph':
             text = rich_text_to_html(block['paragraph']['rich_text'])
             block_html = f"<p>{text if text.strip() else ' '}</p>"
             if block.get('has_children') and block.get('children'):
-                block_html += f"<div style='margin-left: 2em;'>{await blocks_to_html(block['children'], notion_client)}</div>"
+                children_html = await blocks_to_html(block['children'], notion_client)
+                block_html += f"<div style='margin-left: 2em;'>{children_html}</div>"
+        # --- 이미지 블록 처리 (mainsub.py와 동일하게 수정) ---
         elif block_type == 'image':
             image_data = block['image']
-            url = image_data.get('file', {}).get('url') or image_data.get('external', {}).get('url', '')
-            block_html = f"<img src='{url}' alt='Image' class='notion-block-image' style='max-width: 100%; height: auto;'>"
+            url = ''
+            if image_data.get('file'):
+                url = image_data['file']['url']
+            elif image_data.get('external'):
+                url = image_data['external']['url']
+            # class="notion-block-image" 추가하고 인라인 스타일 제거
+            block_html = f"<img src='{url}' alt='Image' class='notion-block-image'>"
         elif block_type == 'code':
             code_text = rich_text_to_html(block['code']['rich_text'])
             language = block['code'].get('language', '')
@@ -215,12 +239,22 @@ async def blocks_to_html(blocks, notion_client):
             block_html = f"<blockquote>{rich_text_to_html(block['quote']['rich_text'])}</blockquote>"
         elif block_type == 'toggle':
             summary = rich_text_to_html(block['toggle']['rich_text'])
-            children_html = await blocks_to_html(block['children'], notion_client) if block.get('has_children') and block.get('children') else ""
+            children_html = ""
+            if block.get('has_children') and block.get('children'):
+                children_html = await blocks_to_html(block['children'], notion_client)
             block_html = f"<details open><summary>{summary}</summary>{children_html}</details>"
         elif block_type == 'table':
+            table_info = block['table']
+            has_column_header = table_info.get('has_column_header', False)
+            has_row_header = table_info.get('has_row_header', False)
             width_ratios = estimate_column_widths_with_pixel_heuristic(block.get('children', []))
-            colgroup_html = ''.join([f'<col style="width:{ratio:.2f}%">' for ratio in width_ratios]) if width_ratios else ""
-            table_html_content = f"<table><colgroup>{colgroup_html}</colgroup>"
+            colgroup_html = ''
+            if width_ratios:
+                colgroup_html = '<colgroup>'
+                for ratio in width_ratios:
+                    colgroup_html += f'<col style="width:{ratio:.2f}%">'
+                colgroup_html += '</colgroup>'
+            table_html_content = f"<table>{colgroup_html}"
             if block.get('children'):
                 for i_row, row_block in enumerate(block['children']):
                     if row_block['type'] == 'table_row':
@@ -229,17 +263,37 @@ async def blocks_to_html(blocks, notion_client):
                         table_html_content += f"<tr style='background:{NOTION_BG_MAP.get(row_bg, '#fff')}'>"
                         for col_idx, cell in enumerate(cells):
                             style = get_cell_style(cell, row_bg=row_bg)
-                            tag = 'th' if (block['table'].get('has_column_header') and i_row == 0) or (block['table'].get('has_row_header') and col_idx == 0) else 'td'
-                            table_html_content += f"<{tag} style='{style}'>{rich_text_to_html(cell)}</{tag}>"
+                            width_style = f"width:{width_ratios[col_idx]:.2f}%;" if col_idx < len(width_ratios) else ''
+                            # 제목 행/열에만 <th class="table-header-cell"> 적용
+                            if (has_column_header and i_row == 0) or (has_row_header and col_idx == 0):
+                                table_html_content += f"<th class='table-header-cell' style='{style}{width_style}'>{rich_text_to_html(cell)}</th>"
+                            else:
+                                table_html_content += f"<td style='{style}{width_style}'>{rich_text_to_html(cell)}</td>"
                         table_html_content += "</tr>"
             table_html_content += "</table>"
             block_html = table_html_content
         elif block_type == 'callout':
             callout = block['callout']
-            icon_html = f"{callout['icon']['emoji']} " if callout.get('icon') and callout['icon']['type'] == 'emoji' else ""
+            icon_html = ''
+            if callout.get('icon'):
+                icon = callout['icon']
+                if icon['type'] == 'emoji':
+                    icon_html = f"{icon['emoji']} "
             callout_text = rich_text_to_html(callout['rich_text'])
-            children_html = await blocks_to_html(block['children'], notion_client) if block.get('has_children') else ''
-            block_html = f"<div class='callout'>{icon_html}{callout_text}{children_html}</div>"
+            children_html = ''
+            if block.get('has_children') and block.get('children'):
+                children_html = await blocks_to_html(block['children'], notion_client)
+            
+            # class 사용으로 변경 (인라인 스타일 제거)
+            block_html = (
+                f"<div class='callout'>"
+                f"{icon_html}{callout_text}{children_html}</div>"
+            )
+        # 이 부분이 처리되지 않은 블록 타입에 대한 대비 (예: Unsupported 블록)
+        elif 'type' in block:
+            print(f"경고: 알 수 없거나 지원되지 않는 블록 타입: {block_type}. 블록 ID: {block.get('id')}")
+            # 개발/디버깅을 위해 이 블록을 HTML에 포함시키지 않거나, 대체 텍스트를 넣을 수 있습니다.
+            block_html = f"<p><em>[Unsupported Block Type: {block_type}]</em></p>"
 
         html_parts.append(block_html)
         i += 1
@@ -252,23 +306,46 @@ async def fetch_all_child_blocks(notion, block_id):
         blocks.extend(response['results'])
         next_cursor = response.get('next_cursor')
         while next_cursor:
-            response = await notion.blocks.children.list(block_id=block_id, page_size=100, start_cursor=next_cursor)
+            response = await notion.blocks.children.list(
+                block_id=block_id,
+                page_size=100,
+                start_cursor=next_cursor
+            )
             blocks.extend(response['results'])
             next_cursor = response.get('next_cursor')
     except Exception as e:
         print(f"블록 가져오기 오류: {e}")
         return []
-    processed_blocks = []
+
+    processed_blocks = [] # 새로운 리스트를 만들어 처리된 블록을 저장
     for block in blocks:
+        # 동기화된 블록이면 항상 원본을 따라가고, 최상위 부모도 추적
         if block.get('type') == 'synced_block':
-            orig_block, _, _ = await get_synced_block_original_and_top_parent(notion, block)
-            if orig_block:
-                if orig_block.get('has_children'):
-                    orig_block['children'] = await fetch_all_child_blocks(notion, orig_block['id'])
-                processed_blocks.append(orig_block)
+            orig_block, top_parent_id, top_parent_type = await get_synced_block_original_and_top_parent(notion, block)
+            if orig_block is None:
+                print(f"경고: 동기화 블록 {block.get('id')}의 원본을 찾거나 접근할 수 없어 건너뜜.")
+                continue  # 원본도 못 찾으면 이 블록은 건너뜜
+
+            # 원본 블록의 children 처리:
+            # 원본 블록도 일반 블록처럼 'has_children'을 체크하고,
+            # 다시 fetch_all_child_blocks를 재귀적으로 호출하여 모든 자식 블록을 가져옵니다.
+            # 이렇게 해야 원본 동기화 블록 내부에 있는 다른 동기화 블록이나 복합 블록들이
+            # 올바르게 파싱되고 처리될 수 있습니다.
+            if orig_block.get('has_children'):
+                orig_block['children'] = await fetch_all_child_blocks(notion, orig_block['id'])
+
+            # 여기서 중요한 점: processed_blocks에 추가하는 것은 'orig_block' 그 자체입니다.
+            # 이 'orig_block'은 이제 자신의 자식 블록 정보(orig_block['children'])를 포함하게 됩니다.
+            # 그리고 blocks_to_html에서 이 orig_block의 type이 'synced_block'일 때
+            # block['synced_block']['children']을 다시 blocks_to_html로 넘겨주므로,
+            # 원본 블록의 자식들은 올바르게 렌더링됩니다.
+            processed_blocks.append(orig_block)
+            print(f"[fetch_all_child_blocks] 동기화 블록의 최상위 부모: {top_parent_id} (타입: {top_parent_type})")
+        # 일반 블록의 children 처리 (이 부분은 기존과 동일)
         elif block.get('has_children'):
             block['children'] = await fetch_all_child_blocks(notion, block['id'])
             processed_blocks.append(block)
         else:
-            processed_blocks.append(block)
-    return processed_blocks 
+            processed_blocks.append(block) # 자식이 없는 일반 블록도 추가
+
+    return processed_blocks # 처리된 블록 리스트 반환

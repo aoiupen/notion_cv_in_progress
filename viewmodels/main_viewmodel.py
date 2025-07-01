@@ -2,6 +2,7 @@ import asyncio
 import json
 import sys
 import re
+import os
 from pathlib import Path
 from PySide6.QtCore import QObject, Signal, Slot
 
@@ -55,7 +56,7 @@ class MainViewModel(QObject):
     def _start_worker(self, async_func, *args):
         if self.worker and self.worker.isRunning():
             self.status_updated.emit("이전 작업이 진행 중입니다. 잠시 후 다시 시도하세요.")
-            return
+            return None
         
         self.worker = WorkerThread(async_func, *args)
         self.worker.status_updated.connect(self.status_updated)
@@ -76,18 +77,21 @@ class MainViewModel(QObject):
     def page_selected(self, page_id: str, page_title: str):
         self.selected_page_id = page_id
         self.selected_page_title = page_title
-        self.status_updated.emit(f"페이지 선택됨: {page_title}...")
-        worker = self._start_worker(self._prepare_and_preview_page_async, page_id)
+        self.status_updated.emit(f"페이지 선택됨: {page_title}")
+        
+        # 블록 개수만 가져와서 UI 업데이트 (실제 처리는 export에서)
+        worker = self._start_worker(self._count_blocks_async, page_id)
         if worker:
-            worker.finished.connect(self._on_prepare_and_preview_finished)
+            worker.finished.connect(self._on_blocks_counted)
             worker.start()
 
     @Slot(int, int)
     def update_preview(self, start_idx: int, end_idx: int):
-        if not self.selected_page_id: return
-        # 새로운 미리보기 요청 시, 기존 작업이 있으면 취소(이번에는 구현하지 않지만, 향후 개선 가능)
-        # 현재는 단순히 새 작업을 시작하게 합니다. _start_worker에서 중복 실행을 막습니다.
-        worker = self._start_worker(self._update_preview_async, start_idx, end_idx)
+        if not self.selected_page_id: 
+            return
+        
+        # 간단한 미리보기만 생성
+        worker = self._start_worker(self._simple_preview_async)
         if worker:
             worker.finished.connect(self._on_preview_updated)
             worker.start()
@@ -96,9 +100,6 @@ class MainViewModel(QObject):
     async def _load_pages_async(self, worker: WorkerThread):
         worker.status_updated.emit("페이지 구조 분석 중...")
         root_pages, all_pages = await self._notion_engine.search_accessible_pages(filter_root_only=True)
-        
-        # 전체 페이지를 ID 기반으로 빠르게 찾을 수 있도록 딕셔너리로 변환
-        all_pages_dict = {p['id']: p for p in all_pages}
         
         # 부모-자식 관계를 딕셔너리로 구성
         parent_to_children = {}
@@ -125,91 +126,112 @@ class MainViewModel(QObject):
             
         return pages_with_children
 
-    async def _prepare_and_preview_page_async(self, worker: WorkerThread, page_id: str):
-        json_path = self._temp_dir / f"{page_id}_children.json"
-        
-        if json_path.exists():
-            worker.status_updated.emit("캐시된 데이터 확인 완료.")
-            with open(json_path, "r", encoding="utf-8") as f:
-                child_ids = json.load(f)
-        else:
-            worker.status_updated.emit("페이지 데이터를 Notion에서 가져와 캐싱합니다...")
-            
-            # 하위 페이지 목록을 먼저 가져옵니다.
-            child_page_ids = []
-            try:
-                children_resp = await self._notion_engine.notion.blocks.children.list(block_id=page_id, page_size=100)
-                children = children_resp.get('results', [])
-                child_page_ids = [c['id'] for c in children if c['type'] == 'child_page']
-            except Exception as e:
-                worker.status_updated.emit(f"하위 페이지 조회 중 경고: {e}")
-
-            # 하위 페이지가 있으면 하위 페이지만, 없으면 현재 페이지만 목록에 포함
-            if child_page_ids:
-                child_ids = child_page_ids
-                worker.status_updated.emit(f"하위 페이지가 있어, {len(child_ids)}개의 하위 페이지만 처리합니다.")
-            else:
-                child_ids = [page_id]
-                worker.status_updated.emit("단독 페이지를 처리합니다.")
-
-            total_pages = len(child_ids)
-            for i, cid in enumerate(child_ids):
-                worker.progress_updated.emit(int((i + 1) / total_pages * 100))
-                page_info = await self._notion_engine.get_page_by_id(cid)
-                if not page_info: # 페이지 정보를 가져오지 못하면 건너뜁니다.
-                    worker.status_updated.emit(f"경고: 페이지 정보({cid})를 가져올 수 없습니다.")
-                    continue
-
-                ctitle = extract_page_title(page_info)
-                blocks = await fetch_all_child_blocks(self._notion_engine.notion, cid)
-                html_content = await blocks_to_html(blocks, self._notion_engine.notion)
-                
-                html_path = self._temp_dir / f"{cid}.html"
-                with open(html_path, "w", encoding="utf-8") as f:
-                    f.write(self._html2pdf_engine.generate_full_html(ctitle, html_content))
-            
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(child_ids, f)
-            worker.status_updated.emit("캐싱 완료.")
-        return child_ids
-
-    async def _update_preview_async(self, worker: WorkerThread, start_idx: int, end_idx: int):
-        json_path = self._temp_dir / f"{self.selected_page_id}_children.json"
-        if not json_path.exists():
-            return "" # 이미지 경로 대신 빈 문자열 반환
-
-        with open(json_path, "r", encoding="utf-8") as f:
-            child_ids = json.load(f)
-
-        htmls = []
-        start = max(0, start_idx)
-        end = min(len(child_ids) - 1, end_idx)
-
-        for i in range(start, end + 1):
-            cid = child_ids[i]
-            html_path = self._temp_dir / f"{cid}.html"
-            if html_path.exists():
-                with open(html_path, "r", encoding="utf-8") as f:
-                    htmls.append(f.read())
-        
-        if not htmls:
-            return ""
-
-        # 전체 HTML 구조로 감싸서 Playwright로 렌더링 후 스크린샷
-        full_html = self._html2pdf_engine.generate_full_html("", "<hr>".join(htmls))
-        preview_image_path = self._temp_dir / "preview.png"
-
+    async def _count_blocks_async(self, worker: WorkerThread, page_id: str):
+        """블록 개수만 세기 (미리보기용)"""
         try:
+            blocks = await fetch_all_child_blocks(self._notion_engine.notion, page_id)
+            return len(blocks)
+        except Exception as e:
+            print(f"블록 개수 세기 실패: {e}")
+            return 0
+
+    async def _simple_preview_async(self, worker: WorkerThread):
+        """간단한 미리보기 - 실제 출력과는 무관"""
+        if not self.selected_page_id:
+            return ""
+            
+        worker.status_updated.emit("미리보기 생성 중...")
+        
+        try:
+            # mainsub.py와 동일한 방식으로 HTML 생성
+            blocks = await fetch_all_child_blocks(self._notion_engine.notion, self.selected_page_id)
+            content_html = await blocks_to_html(blocks, self._notion_engine.notion)
+            
+            page_info = await self._notion_engine.get_page_by_id(self.selected_page_id)
+            page_title = extract_page_title(page_info) if page_info else ""
+            
+            # mainsub.py의 get_styles() 함수 사용
+            styles = self._get_styles()
+            full_html = self._generate_html_with_conditional_title(page_title, content_html, styles)
+            
+            # 🔍 디버깅 정보 출력
+            print(f"🎨 CSS 길이: {len(styles)} 문자")
+            print(f"📝 Content HTML 길이: {len(content_html)} 문자")
+            print(f"🌐 Full HTML 길이: {len(full_html)} 문자")
+            
+            # CSS 내용 일부 확인
+            if styles:
+                print(f"🎨 CSS 시작 부분: {styles[:200]}...")
+            else:
+                print("❌ CSS가 비어있음!")
+            
+            # HTML 내용 일부 확인  
+            print(f"📝 Content HTML 시작 부분: {content_html[:500]}...")
+            
+            # 생성된 HTML을 임시 파일로 저장해서 확인
+            debug_html_path = self._temp_dir / f"debug_{self.selected_page_id}.html"
+            with open(debug_html_path, "w", encoding="utf-8") as f:
+                f.write(full_html)
+            print(f"🔍 디버그 HTML 저장됨: {debug_html_path}")
+            
+            # 스크린샷 생성
+            preview_image_path = self._temp_dir / f"preview_{self.selected_page_id}.png"
+            
             async with async_playwright() as p:
                 browser = await p.chromium.launch()
                 page = await browser.new_page()
                 await page.set_content(full_html, wait_until="networkidle")
                 await page.screenshot(path=str(preview_image_path), full_page=True)
                 await browser.close()
+            
             return str(preview_image_path)
+            
         except Exception as e:
-            print(f"미리보기 이미지 생성 실패: {e}")
+            print(f"미리보기 생성 실패: {e}")
             return ""
+
+    def _get_styles(self):
+        """mainsub.py의 get_styles() 함수와 완전히 동일하게 수정"""
+        css_path = os.path.join(os.getcwd(), 'portfolio_style.css')
+        try:
+            with open(css_path, encoding='utf-8') as f:
+                css = f.read()
+            print(f"✅ CSS 파일 로드 성공: {len(css)} 문자")
+            return css
+        except Exception as e:
+            print(f"❌ CSS 파일 읽기 오류: {e}")
+            print(f"🔍 찾고 있는 경로: {css_path}")
+            print(f"🔍 현재 작업 디렉토리: {os.getcwd()}")
+            print(f"🔍 파일 존재 여부: {os.path.exists(css_path)}")
+            return ""
+
+    def _generate_html_with_conditional_title(self, page_title, content_html, styles):
+        """mainsub.py와 완전히 동일한 포맷으로 수정 (멀티라인 문자열 사용)"""
+        clean_title = page_title.strip() if page_title else ""
+        if clean_title:
+            title_section = f'<h1>{clean_title}</h1><div style="height: 0.3em;"></div>'
+            body_class = ""
+            html_title = clean_title
+        else:
+            title_section = ""
+            body_class = ' class="no-title"'
+            html_title = f"Portfolio"
+        
+        # mainsub.py와 동일한 멀티라인 포맷 사용
+        return f"""
+        <!DOCTYPE html>
+        <html lang=\"ko\">
+        <head>
+            <meta charset=\"UTF-8\">
+            <title>{html_title}</title>
+            <style>{styles}</style>
+        </head>
+        <body{body_class}>
+            {title_section}
+            {content_html}
+        </body>
+        </html>
+        """
 
     # --- Private Slots for Worker Results ---
     @Slot(object)
@@ -219,71 +241,90 @@ class MainViewModel(QObject):
         self.status_updated.emit(f"페이지 로드 완료. {len(self.pages)}개 페이지를 찾았습니다.")
 
     @Slot(object)
-    def _on_preview_updated(self, image_path):
-        if image_path and isinstance(image_path, str):
-            self.preview_updated.emit(image_path)
+    def _on_blocks_counted(self, block_count):
+        if block_count > 0:
+            self.child_count_updated.emit(block_count)
+            self.status_updated.emit(f"블록 {block_count}개 확인. 미리보기를 생성합니다.")
+            # 자동으로 미리보기 생성
+            self.update_preview(0, block_count - 1)
         else:
-            self.status_updated.emit("미리보기 컨텐츠 생성에 실패했습니다.")
-            self.preview_updated.emit("")
+            self.status_updated.emit("블록을 찾을 수 없습니다.")
 
     @Slot(object)
-    def _on_prepare_and_preview_finished(self, child_ids):
-        if not child_ids:
-            self.status_updated.emit("오류: 페이지 데이터를 준비할 수 없습니다.")
-            self.progress_updated.emit(0)
-            self.child_count_updated.emit(0)
-            return
-
-        self.child_count_updated.emit(len(child_ids))
-        self.progress_updated.emit(0)
-        self.status_updated.emit("데이터 준비 완료. 미리보기를 표시합니다.")
-        # 미리보기 업데이트 요청 (결과가 유효할 때만)
-        self.update_preview(0, len(child_ids) - 1)
+    def _on_preview_updated(self, image_path):
+        if image_path and isinstance(image_path, str) and os.path.exists(image_path):
+            self.preview_updated.emit(image_path)
+            self.status_updated.emit("미리보기 준비 완료.")
+        else:
+            self.status_updated.emit("미리보기 생성에 실패했습니다.")
+            self.preview_updated.emit("")
 
     @Slot(str)
     def start_export(self, export_type: str):
-        # 지금은 간단한 시나리오만 구현
-        self.status_updated.emit("PDF/HTML export 시작...")
-        worker = self._start_worker(self._export_async)
+        """실제 내보내기 - mainsub.py 로직 그대로 사용"""
+        if not self.selected_page_id:
+            self.status_updated.emit("페이지를 먼저 선택해주세요.")
+            return
+            
+        self.status_updated.emit("PDF 내보내기 시작...")
+        worker = self._start_worker(self._export_mainsub_async)
         if worker:
-            # 익스포트 완료 후 상태 업데이트를 위한 연결
             worker.finished.connect(lambda result: self.status_updated.emit(result))
             worker.start()
 
-    async def _export_async(self, worker: WorkerThread):
-        json_path = self._temp_dir / f"{self.selected_page_id}_children.json"
-        if not json_path.exists():
-            return "오류: 내보낼 캐시 데이터가 없습니다."
-
-        # 파일명으로 사용할 수 없는 문자 제거/변경
-        sanitized_title = re.sub(r'[\\/*?:"<>|]', "", self.selected_page_title)
-        output_dir = Path.cwd() / ".etc" # 절대 경로 사용으로 수정
-        temp_dir = self._temp_dir
-
-        with open(json_path, "r") as f:
-            child_ids = json.load(f)
-
-        all_html_content = []
-        for i, cid in enumerate(child_ids):
-            worker.progress_updated.emit(int((i + 1) / len(child_ids) * 100))
-            html_path = temp_dir / f"{cid}.html"
-            if not html_path.exists():
-                worker.status_updated.emit(f"경고: 캐시된 HTML 파일({html_path})이 없습니다. 건너뜁니다.")
-                continue
-
-            with open(html_path, "r", encoding="utf-8") as f:
-                html_content = f.read()
-                all_html_content.append(html_content)
-
-            # 개별 PDF 저장 (하위 페이지가 있을 경우)
-            if len(child_ids) > 1:
-                pdf_filename = f"{sanitized_title}_{i:02d}.pdf"
-                await self._html2pdf_engine.html_to_pdf(html_content, temp_dir / pdf_filename)
-        
-        # 최종 합본 PDF 생성
-        final_html = self._html2pdf_engine.generate_full_html("", "<hr>".join(all_html_content))
-        final_pdf_path = output_dir / f"{sanitized_title}_final.pdf"
-        await self._html2pdf_engine.html_to_pdf(final_html, final_pdf_path)
-
-        worker.progress_updated.emit(100)
-        return f"내보내기 완료: {final_pdf_path}" 
+    async def _export_mainsub_async(self, worker: WorkerThread):
+        """mainsub.py의 main() 함수 로직 그대로 복사"""
+        try:
+            worker.status_updated.emit("Notion 블록 가져오는 중...")
+            worker.progress_updated.emit(20)
+            
+            # mainsub.py와 동일: 전체 블록 가져오기
+            blocks = await fetch_all_child_blocks(self._notion_engine.notion, self.selected_page_id)
+            
+            worker.status_updated.emit("HTML 변환 중...")
+            worker.progress_updated.emit(40)
+            
+            # mainsub.py와 동일: HTML 변환
+            content_html = await blocks_to_html(blocks, self._notion_engine.notion)
+            
+            # 페이지 제목 가져오기
+            page_info = await self._notion_engine.get_page_by_id(self.selected_page_id)
+            page_title = extract_page_title(page_info) if page_info else "Portfolio"
+            
+            # mainsub.py와 동일한 HTML 생성
+            styles = self._get_styles()
+            full_html = self._generate_html_with_conditional_title(page_title, content_html, styles)
+            
+            # 🔍 내보내기 시에도 디버깅 정보 출력
+            print(f"📋 [내보내기] CSS 길이: {len(styles)} 문자")
+            print(f"📋 [내보내기] Content HTML 길이: {len(content_html)} 문자")
+            
+            # 출력 파일명 (특수문자 제거)
+            sanitized_title = re.sub(r'[\\/*?:"<>|]', "", page_title)
+            output_dir = Path.cwd() / ".etc"
+            output_dir.mkdir(exist_ok=True)
+            
+            # HTML 파일 저장
+            html_path = output_dir / f"{sanitized_title}.html"
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(full_html)
+            print(f"📋 [내보내기] HTML 파일 저장됨: {html_path}")
+            
+            worker.status_updated.emit("PDF 변환 중...")
+            worker.progress_updated.emit(70)
+            
+            # mainsub.py와 동일한 PDF 생성
+            pdf_path = output_dir / f"{sanitized_title}.pdf"
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page()
+                await page.set_content(full_html, wait_until="networkidle")
+                await page.pdf(path=str(pdf_path), format="A4", print_background=True)
+                await browser.close()
+            
+            worker.progress_updated.emit(100)
+            
+            return f"✅ 생성 완료!\n📄 HTML: {html_path}\n📋 PDF: {pdf_path}"
+            
+        except Exception as e:
+            return f"❌ 오류 발생: {e}"

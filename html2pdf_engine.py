@@ -27,21 +27,32 @@ class HTML2PDFEngine:
         """
 
     def generate_full_html(self, title: str, content: str) -> str:
+        """HTML 문서 생성 - 타이틀 중복 방지 로직 추가"""
         css_styles = self._load_css_styles()
-        return f"""
-<!DOCTYPE html>
-<html lang=\"ko\">
+        
+        # 타이틀 처리 로직 수정 (mainsub.py와 동일하게)
+        clean_title = title.strip() if title else ""
+        if clean_title:
+            title_section = f'<h1>{clean_title}</h1><div style="height: 0.3em;"></div>'
+            body_class = ""
+            html_title = clean_title
+        else:
+            title_section = ""
+            body_class = ' class="no-title"'
+            html_title = "Portfolio"
+        
+        return f"""<!DOCTYPE html>
+<html lang="ko">
 <head>
-    <meta charset=\"UTF-8\">
-    <title>{title}</title>
+    <meta charset="UTF-8">
+    <title>{html_title}</title>
     <style>{css_styles}</style>
 </head>
-<body>
-    {'<h1>' + title + '</h1><div style="height: 1.5em;"></div>' if title else ''}
+<body{body_class}>
+    {title_section}
     {content}
 </body>
-</html>
-"""
+</html>"""
 
     async def html_to_pdf(self, html: str, output_filename: str) -> Optional[str]:
         pdf_path = self.output_dir / output_filename
@@ -56,4 +67,4 @@ class HTML2PDFEngine:
             return str(pdf_path)
         except Exception as e:
             print(f"❌ PDF 생성 중 오류: {e}")
-            return None 
+            return None
