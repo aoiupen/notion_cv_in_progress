@@ -232,24 +232,21 @@ async def export_single_pdf(notion_client, page_id, page_index, temp_dir):
     styles = get_styles()
     
     clean_title = page_title.strip() if page_title else ""
-    if clean_title:
+    # 제목이 없거나 'Untitled'면 h1을 출력하지 않음
+    if clean_title and clean_title.lower() != "untitled":
         title_section = f'<h1>{clean_title}</h1><div style="height: 0.3em;"></div>'
-        body_class = ""
-        html_title = clean_title
     else:
         title_section = ""
-        body_class = ' class="no-title"'
-        html_title = f"Portfolio_{page_index}"
     
     full_html = f"""
     <!DOCTYPE html>
     <html lang=\"ko\">
     <head>
         <meta charset=\"UTF-8\">
-        <title>{html_title}</title>
+        <title>{clean_title if clean_title else f'Portfolio_{page_index}'}</title>
         <style>{styles}</style>
     </head>
-    <body{body_class}>
+    <body>
         {title_section}
         {content_html}
     </body>
@@ -290,18 +287,15 @@ async def export_and_merge_pdf(page_ids, output_pdf_path="My_Portfolio_Final.pdf
     temp_pdf_paths = []
     
     total_pages = len(page_ids)
-    
-    for idx, page_id in enumerate(page_ids):
-        # 진행률 콜백 호출
-        if progress_callback:
-            progress_callback(idx, total_pages)
-        
-        try:
-            pdf_path = await export_single_pdf(notion, page_id, idx, temp_dir)
-            temp_pdf_paths.append(pdf_path)
-        except Exception as e:
-            print(f"페이지 {idx + 1} PDF 생성 중 오류: {e}")
-            continue
+    semaphore = asyncio.Semaphore(4)
+    async def export_with_semaphore(page_id, idx):
+        async with semaphore:
+            if progress_callback:
+                progress_callback(idx, total_pages)
+            return await export_single_pdf(notion, page_id, idx, temp_dir)
+    tasks = [export_with_semaphore(page_id, idx) for idx, page_id in enumerate(page_ids)]
+    temp_pdf_paths = await asyncio.gather(*tasks)
+    temp_pdf_paths = [path for path in temp_pdf_paths if isinstance(path, str) and os.path.exists(path)]
     
     # 병합 완료 시 진행률 100%
     if progress_callback:
