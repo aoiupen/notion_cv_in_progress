@@ -88,10 +88,7 @@ li {
     margin: 1.5em auto;
     width: auto;
     height: auto;
-    max-width: 100%;
-    /* max-height: 100%; <- 필요시 추가. PDF 페이지 높이에 맞추는 경우 고려 */
-    object-fit: contain; /* 이미지 비율 유지 및 컨테이너에 맞게 축소 */
-    border-radius: 8px;
+    object-fit: contain;
     page-break-inside: avoid;
     page-break-before: auto;
 }
@@ -135,6 +132,7 @@ image,
 picture img,
 figure img {
     border-radius: 8px;
+    max-width: 100%;
 }
 
 /* 이미지 컨테이너도 라운드 적용 및 넘침 숨김 */

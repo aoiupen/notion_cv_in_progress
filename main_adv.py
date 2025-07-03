@@ -6,32 +6,16 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, Q
 from PySide6.QtCore import Qt
 from notion_client import AsyncClient
 from exporter import export_and_merge_pdf
-from notion_api import get_root_pages, get_all_descendant_page_ids
+from notion_api import get_root_pages, get_all_descendant_page_ids, get_first_child_page_ids
 from config import FINAL_PDF_NAME
 from utils import extract_page_title
 
-async def get_first_child_page_ids(page_id, notion_client):
-    # Notion blocks.children.list로 실제 children 순서대로 추출
-    children = []
-    try:
-        response = await notion_client.blocks.children.list(block_id=page_id, page_size=100)
-        children = response['results']
-        next_cursor = response.get('next_cursor')
-        while next_cursor:
-            response = await notion_client.blocks.children.list(block_id=page_id, page_size=100, start_cursor=next_cursor)
-            children.extend(response['results'])
-            next_cursor = response.get('next_cursor')
-    except Exception as e:
-        print(f"하위 페이지 순서 가져오기 오류: {e}")
-        return []
-    # type이 'child_page'인 것만 추출
-    return [block['id'] for block in children if block['type'] == 'child_page']
-
-class MainWindow(QMainWindow):
+# 미리보기, 고급 옵션 등 추가 기능을 위한 구조 (실제 기능은 추후 구현)
+class MainWindowAdv(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Notion PDF Exporter (Simple UI)")
-        self.setMinimumSize(600, 400)
+        self.setWindowTitle("Notion PDF Exporter (Advanced UI)")
+        self.setMinimumSize(800, 600)
         self.root_pages = []
         self.all_pages = []
         self.init_ui()
@@ -41,15 +25,28 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
-        self.label = QLabel("Notion 루트 페이지 목록:")
+        
+        # 기본 UI 요소들
+        self.label = QLabel("Notion 루트 페이지 목록 (고급):")
         layout.addWidget(self.label)
+        
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QListWidget.MultiSelection)
         layout.addWidget(self.list_widget)
+        
+        # TODO: 고급 기능들을 위한 UI 요소들 (향후 추가 예정)
+        # - PDF 미리보기 패널
+        # - 스타일 옵션 선택 (CSS 테마 변경)
+        # - 페이지 순서 조정 (드래그 앤 드롭)
+        # - 개별 페이지 선택/해제 체크박스
+        # - 출력 형식 옵션 (A4, Letter, 사용자 정의)
+        # - 병합 옵션 (개별 파일 vs 단일 파일)
+        
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
         layout.addWidget(self.progress_bar)
-        self.export_btn = QPushButton("PDF로 내보내기")
+        
+        self.export_btn = QPushButton("PDF로 내보내기 (고급)")
         self.export_btn.clicked.connect(self.export_pdf)
         layout.addWidget(self.export_btn)
 
@@ -64,7 +61,7 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem(f"{title} ({page['id'][:8]})")
             item.setData(Qt.UserRole, page['id'])
             self.list_widget.addItem(item)
-        self.label.setText("Notion 루트 페이지 목록:")
+        self.label.setText("Notion 루트 페이지 목록 (고급):")
 
     def load_pages_sync(self):
         asyncio.run(self.load_pages())
@@ -75,7 +72,7 @@ class MainWindow(QMainWindow):
         if exporting:
             self.label.setText("PDF 생성 중...")
         else:
-            self.label.setText("Notion 루트 페이지 목록:")
+            self.label.setText("Notion 루트 페이지 목록 (고급):")
 
     def show_export_result(self, result, elapsed=None):
         msg = ""
@@ -142,7 +139,7 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-    window = MainWindow()
+    window = MainWindowAdv()
     window.show()
     sys.exit(app.exec())
 

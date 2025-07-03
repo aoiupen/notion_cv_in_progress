@@ -4,6 +4,9 @@ import asyncio
 from notion_client import AsyncClient
 from playwright.async_api import async_playwright
 from PyPDF2 import PdfMerger
+from config import TEMP_DIR, FINAL_PDF_PATH
+from notion_api import fetch_all_child_blocks, get_synced_block_original_and_top_parent
+from utils import extract_page_title
 
 NOTION_COLOR_MAP = {
     'default': '#000000',
@@ -39,18 +42,7 @@ def get_styles():
         print(f"CSS 파일 읽기 오류: {e}")
         return ""
 
-def extract_page_title(page_info):
-    try:
-        properties = page_info.get('properties', {})
-        for prop_name, prop_data in properties.items():
-            if prop_data.get('type') == 'title':
-                title_array = prop_data.get('title', [])
-                if title_array:
-                    return ''.join([item['plain_text'] for item in title_array])
-        return ""
-    except Exception as e:
-        print(f"제목 추출 중 오류: {e}")
-        return ""
+# extract_page_title 함수는 utils.py로 이동됨
 
 def rich_text_to_html(rich_text_array, process_nested_bullets=False):
     if not rich_text_array:
@@ -145,38 +137,6 @@ def estimate_column_widths_with_pixel_heuristic(table_rows):
         percent_widths[0] += diff
     return percent_widths
 
-async def get_synced_block_original_and_top_parent(notion, block):
-    current_block = block
-    if current_block.get('type') == 'synced_block':
-        synced_from = current_block['synced_block'].get('synced_from')
-        if synced_from and 'block_id' in synced_from:
-            try:
-                original_block = await notion.blocks.retrieve(synced_from['block_id'])
-                return await get_synced_block_original_and_top_parent(notion, original_block)
-            except Exception as e:
-                print(f"[get_synced_block] 원본 블록 접근 실패: {e}")
-                return None, None, None
-    block_id_to_find_parent = current_block['id']
-    parent = current_block.get('parent', {})
-    parent_type = parent.get('type')
-    while parent_type == 'block_id':
-        next_id = parent.get('block_id')
-        try:
-            parent_block = await notion.blocks.retrieve(next_id)
-            parent = parent_block.get('parent', {})
-            parent_type = parent.get('type')
-            block_id_to_find_parent = parent_block['id']
-        except Exception:
-            return current_block, None, None
-    if parent_type == 'page_id':
-        return current_block, parent.get('page_id'), 'page'
-    elif parent_type == 'database_id':
-        return current_block, parent.get('database_id'), 'database'
-    elif parent_type == 'workspace':
-        return current_block, block_id_to_find_parent, 'page'
-    else:
-        return current_block, None, None
-
 async def blocks_to_html(blocks, notion_client):
     if not blocks:
         return ""
@@ -246,7 +206,10 @@ async def blocks_to_html(blocks, notion_client):
                         for col_idx, cell in enumerate(cells):
                             style = get_cell_style(cell, row_bg=row_bg)
                             tag = 'th' if (block['table'].get('has_column_header') and i_row == 0) or (block['table'].get('has_row_header') and col_idx == 0) else 'td'
-                            table_html_content += f"<{tag} style='{style}'>{rich_text_to_html(cell)}</{tag}>"
+                            if tag == 'th':
+                                table_html_content += f"<th class='table-header-cell' style='{style}'>{rich_text_to_html(cell)}</th>"
+                            else:
+                                table_html_content += f"<td style='{style}'>{rich_text_to_html(cell)}</td>"
                         table_html_content += "</tr>"
             table_html_content += "</table>"
             block_html = table_html_content
@@ -260,86 +223,89 @@ async def blocks_to_html(blocks, notion_client):
         i += 1
     return '\n'.join(html_parts)
 
-async def fetch_all_child_blocks(notion, block_id):
-    blocks = []
-    try:
-        response = await notion.blocks.children.list(block_id=block_id, page_size=100)
-        blocks.extend(response['results'])
-        next_cursor = response.get('next_cursor')
-        while next_cursor:
-            response = await notion.blocks.children.list(block_id=block_id, page_size=100, start_cursor=next_cursor)
-            blocks.extend(response['results'])
-            next_cursor = response.get('next_cursor')
-    except Exception as e:
-        print(f"블록 가져오기 오류: {e}")
-        return []
-    processed_blocks = []
-    for block in blocks:
-        if block.get('type') == 'synced_block':
-            orig_block, _, _ = await get_synced_block_original_and_top_parent(notion, block)
-            if orig_block:
-                if orig_block.get('has_children'):
-                    orig_block['children'] = await fetch_all_child_blocks(notion, orig_block['id'])
-                processed_blocks.append(orig_block)
-        elif block.get('has_children'):
-            block['children'] = await fetch_all_child_blocks(notion, block['id'])
-            processed_blocks.append(block)
-        else:
-            processed_blocks.append(block)
-    return processed_blocks
+async def export_single_pdf(notion_client, page_id, page_index, temp_dir):
+    """단일 페이지의 PDF를 생성합니다."""
+    page_info = await notion_client.pages.retrieve(page_id=page_id)
+    page_title = extract_page_title(page_info)
+    blocks = await fetch_all_child_blocks(notion_client, page_id)
+    content_html = await blocks_to_html(blocks, notion_client)
+    styles = get_styles()
+    
+    clean_title = page_title.strip() if page_title else ""
+    if clean_title:
+        title_section = f'<h1>{clean_title}</h1><div style="height: 0.3em;"></div>'
+        body_class = ""
+        html_title = clean_title
+    else:
+        title_section = ""
+        body_class = ' class="no-title"'
+        html_title = f"Portfolio_{page_index}"
+    
+    full_html = f"""
+    <!DOCTYPE html>
+    <html lang=\"ko\">
+    <head>
+        <meta charset=\"UTF-8\">
+        <title>{html_title}</title>
+        <style>{styles}</style>
+    </head>
+    <body{body_class}>
+        {title_section}
+        {content_html}
+    </body>
+    </html>
+    """
+    
+    pdf_path = os.path.join(temp_dir, f"My_Portfolio_{page_index}.pdf")
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.set_content(full_html, wait_until="networkidle")
+        await page.pdf(path=pdf_path, format="A4", print_background=True)
+        await browser.close()
+    
+    return pdf_path
 
-async def export_and_merge_pdf(page_ids, output_pdf_path="My_Portfolio_Final.pdf"):
+def merge_pdfs(pdf_paths, output_path):
+    """여러 PDF 파일을 하나로 병합합니다."""
+    if not pdf_paths:
+        return None
+    
+    merger = PdfMerger()
+    for pdf in pdf_paths:
+        merger.append(pdf)
+    merger.write(output_path)
+    merger.close()
+    return output_path
+
+async def export_and_merge_pdf(page_ids, output_pdf_path="My_Portfolio_Final.pdf", progress_callback=None):
+    """여러 페이지의 PDF를 생성하고 병합합니다. progress_callback은 (current, total) 인수를 받습니다."""
     from dotenv import load_dotenv
     load_dotenv()
     NOTION_API_KEY = os.getenv("NOTION_API_KEY")
     notion = AsyncClient(auth=NOTION_API_KEY)
-    temp_dir = os.path.join(".etc", "temp")
+    
+    temp_dir = TEMP_DIR
     os.makedirs(temp_dir, exist_ok=True)
     temp_pdf_paths = []
-    for idx, PAGE_ID in enumerate(page_ids):
-        page_info = await notion.pages.retrieve(page_id=PAGE_ID)
-        page_title = extract_page_title(page_info)
-        blocks = await fetch_all_child_blocks(notion, PAGE_ID)
-        content_html = await blocks_to_html(blocks, notion)
-        styles = get_styles()
-        clean_title = page_title.strip() if page_title else ""
-        if clean_title:
-            title_section = f'<h1>{clean_title}</h1><div style="height: 0.3em;"></div>'
-            body_class = ""
-            html_title = clean_title
-        else:
-            title_section = ""
-            body_class = ' class="no-title"'
-            html_title = f"Portfolio_{idx}"
-        full_html = f"""
-        <!DOCTYPE html>
-        <html lang=\"ko\">
-        <head>
-            <meta charset=\"UTF-8\">
-            <title>{html_title}</title>
-            <style>{styles}</style>
-        </head>
-        <body{body_class}>
-            {title_section}
-            {content_html}
-        </body>
-        </html>
-        """
-        pdf_path = os.path.join(temp_dir, f"My_Portfolio_{idx}.pdf")
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-            await page.set_content(full_html, wait_until="networkidle")
-            await page.pdf(path=pdf_path, format="A4", print_background=True)
-            await browser.close()
-        temp_pdf_paths.append(pdf_path)
-    if temp_pdf_paths:
-        merger = PdfMerger()
-        for pdf in temp_pdf_paths:
-            merger.append(pdf)
-        final_pdf_path = os.path.join(".etc", output_pdf_path)
-        merger.write(final_pdf_path)
-        merger.close()
-        return final_pdf_path
-    else:
-        return None 
+    
+    total_pages = len(page_ids)
+    
+    for idx, page_id in enumerate(page_ids):
+        # 진행률 콜백 호출
+        if progress_callback:
+            progress_callback(idx, total_pages)
+        
+        try:
+            pdf_path = await export_single_pdf(notion, page_id, idx, temp_dir)
+            temp_pdf_paths.append(pdf_path)
+        except Exception as e:
+            print(f"페이지 {idx + 1} PDF 생성 중 오류: {e}")
+            continue
+    
+    # 병합 완료 시 진행률 100%
+    if progress_callback:
+        progress_callback(total_pages, total_pages)
+    
+    final_pdf_path = FINAL_PDF_PATH if output_pdf_path == "My_Portfolio_Final.pdf" else output_pdf_path
+    return merge_pdfs(temp_pdf_paths, final_pdf_path) 
