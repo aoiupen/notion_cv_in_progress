@@ -101,5 +101,14 @@ async def get_first_child_page_ids(page_id, notion_client):
     except Exception as e:
         print(f"하위 페이지 순서 가져오기 오류: {e}")
         return []
-    # type이 'child_page'인 것만 추출
-    return [block['id'] for block in children if block['type'] == 'child_page'] 
+    
+    # 빈 줄(empty paragraph)까지만 child_page를 가져오도록 수정
+    child_page_ids = []
+    for block in children:
+        # 내용이 없는 paragraph 블록 (빈 줄)을 만나면 중단
+        if block['type'] == 'paragraph' and not block['paragraph'].get('rich_text'):
+            break 
+        if block['type'] == 'child_page':
+            child_page_ids.append(block['id'])
+            
+    return child_page_ids 

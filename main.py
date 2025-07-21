@@ -2,46 +2,67 @@ import sys
 import os
 import asyncio
 import time
-from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QPushButton, QListWidget, QListWidgetItem, QLabel, QMessageBox, QProgressBar
-from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget, QListWidgetItem, QLabel, QMessageBox, QProgressBar
+from PySide6.QtCore import Qt, QThread, Signal, Slot
 from notion_client import AsyncClient
 from exporter import export_and_merge_pdf
-from notion_api import get_root_pages, get_all_descendant_page_ids
+from notion_api import get_root_pages, get_first_child_page_ids
 from config import FINAL_PDF_NAME
 from utils import extract_page_title
 
-async def get_first_child_page_ids(page_id, notion_client):
-    # Notion blocks.children.list로 실제 children 순서대로 추출
-    children = []
-    try:
-        response = await notion_client.blocks.children.list(block_id=page_id, page_size=100)
-        children = response['results']
-        next_cursor = response.get('next_cursor')
-        while next_cursor:
-            response = await notion_client.blocks.children.list(block_id=page_id, page_size=100, start_cursor=next_cursor)
-            children.extend(response['results'])
-            next_cursor = response.get('next_cursor')
-    except Exception as e:
-        print(f"하위 페이지 순서 가져오기 오류: {e}")
-        return []
-    # type이 'child_page'인 것만 추출
-    return [block['id'] for block in children if block['type'] == 'child_page']
+class LoadPagesThread(QThread):
+    pages_loaded = Signal(list, list)
+    error = Signal(str)
+
+    def run(self):
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            root_pages, all_pages = loop.run_until_complete(get_root_pages())
+            self.pages_loaded.emit(root_pages, all_pages)
+        except Exception as e:
+            self.error.emit(str(e))
+
+class ExportPDFThread(QThread):
+    progress = Signal(int, int)
+    finished = Signal(str, float)
+    error = Signal(str)
+
+    def __init__(self, page_ids_unique, final_pdf_name):
+        super().__init__()
+        self.page_ids_unique = page_ids_unique
+        self.final_pdf_name = final_pdf_name
+
+    def run(self):
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            start_time = time.time()
+            def progress_callback(current, total_pages):
+                self.progress.emit(current, total_pages)
+            result = loop.run_until_complete(export_and_merge_pdf(self.page_ids_unique, self.final_pdf_name, progress_callback))
+            elapsed = time.time() - start_time
+            self.finished.emit(result, elapsed)
+        except Exception as e:
+            self.error.emit(str(e))
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Notion PDF Exporter (Simple UI)")
+        self.setWindowTitle("Notion PDF Exporter")
         self.setMinimumSize(600, 400)
         self.root_pages = []
         self.all_pages = []
         self.init_ui()
-        self.load_pages_sync()
+        self.load_pages_thread = None
+        self.export_pdf_thread = None
+        self.load_pages()
 
     def init_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
-        self.label = QLabel("Notion 루트 페이지 목록:")
+        self.label = QLabel("목록:")
         layout.addWidget(self.label)
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QListWidget.MultiSelection)
@@ -49,34 +70,58 @@ class MainWindow(QMainWindow):
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
         layout.addWidget(self.progress_bar)
+        
+        button_layout = QHBoxLayout()
         self.export_btn = QPushButton("PDF로 내보내기")
         self.export_btn.clicked.connect(self.export_pdf)
-        layout.addWidget(self.export_btn)
+        button_layout.addWidget(self.export_btn)
 
-    async def load_pages(self):
+        self.refresh_btn = QPushButton("새로고침")
+        self.refresh_btn.clicked.connect(self.load_pages)
+        button_layout.addWidget(self.refresh_btn)
+
+        layout.addLayout(button_layout)
+
+    def load_pages(self):
         self.label.setText("페이지 불러오는 중...")
-        root_pages, all_pages = await get_root_pages()
+        self.set_buttons_enabled(False)
+        self.load_pages_thread = LoadPagesThread()
+        self.load_pages_thread.pages_loaded.connect(self.on_pages_loaded)
+        self.load_pages_thread.error.connect(self.on_load_pages_error)
+        self.load_pages_thread.start()
+
+    @Slot(list, list)
+    def on_pages_loaded(self, root_pages, all_pages):
         self.root_pages = root_pages
         self.all_pages = all_pages
         self.list_widget.clear()
         for page in root_pages:
             title = extract_page_title(page)
-            item = QListWidgetItem(f"{title} ({page['id'][:8]})")
+            item = QListWidgetItem(title)
             item.setData(Qt.UserRole, page['id'])
             self.list_widget.addItem(item)
-        self.label.setText("Notion 루트 페이지 목록:")
+        self.label.setText("목록:")
+        self.set_buttons_enabled(True)
 
-    def load_pages_sync(self):
-        asyncio.run(self.load_pages())
+    @Slot(str)
+    def on_load_pages_error(self, msg):
+        QMessageBox.critical(self, "오류", f"페이지 불러오기 실패: {msg}")
+        self.label.setText("페이지 불러오기 실패")
+        self.set_buttons_enabled(True)
+
+    def set_buttons_enabled(self, enabled: bool):
+        self.export_btn.setEnabled(enabled)
+        self.refresh_btn.setEnabled(enabled)
 
     def set_exporting_state(self, exporting: bool):
-        self.export_btn.setEnabled(not exporting)
+        self.set_buttons_enabled(not exporting)
         self.progress_bar.setEnabled(exporting)
         if exporting:
             self.label.setText("PDF 생성 중...")
         else:
-            self.label.setText("Notion 루트 페이지 목록:")
+            self.label.setText("목록:")
 
+    @Slot(str, float)
     def show_export_result(self, result, elapsed=None):
         msg = ""
         if result:
@@ -91,6 +136,20 @@ class MainWindow(QMainWindow):
                 msg += f"\n(총 소요 시간: {elapsed:.2f}초)"
             QMessageBox.critical(self, "실패", msg)
             self.label.setText("PDF 생성 실패" + (f" (총 {elapsed:.2f}초)" if elapsed is not None else ""))
+        self.set_exporting_state(False)
+
+    @Slot(int, int)
+    def update_progress(self, current, total_pages):
+        self.progress_bar.setValue(current)
+        percent = int((current / total_pages) * 100) if total_pages > 0 else 0
+        self.label.setText(f"PDF 생성 중... {percent}% ({current}/{total_pages})")
+        QApplication.processEvents()
+
+    @Slot(str)
+    def on_export_error(self, msg):
+        QMessageBox.critical(self, "오류", f"PDF 생성 실패: {msg}")
+        self.set_exporting_state(False)
+        self.label.setText("PDF 생성 실패")
 
     def export_pdf(self):
         selected_items = self.list_widget.selectedItems()
@@ -101,9 +160,12 @@ class MainWindow(QMainWindow):
         page_ids = []
         notion_client = AsyncClient(auth=os.getenv("NOTION_API_KEY"))
         
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
         for item in selected_items:
             page_id = item.data(Qt.UserRole)
-            first_child_ids = asyncio.run(get_first_child_page_ids(page_id, notion_client))
+            first_child_ids = loop.run_until_complete(get_first_child_page_ids(page_id, notion_client))
             if first_child_ids:
                 page_ids.extend(first_child_ids)
             else:
@@ -112,9 +174,9 @@ class MainWindow(QMainWindow):
 
         page_ids_unique = list(dict.fromkeys(page_ids))
         total = len(page_ids_unique)
-        
+
         if total == 0:
-            QMessageBox.warning(self, "경고", "선택한 페이지에 하위 페이지가 없습니다.")
+            QMessageBox.warning(self, "경고", "출력할 페이지가 없습니다.")
             return
 
         self.set_exporting_state(True)
@@ -122,23 +184,11 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         QApplication.processEvents()
 
-        start_time = time.time()
-
-        def progress_callback(current, total_pages):
-            """진행률 업데이트 콜백 함수"""
-            self.progress_bar.setValue(current)
-            percent = int((current / total_pages) * 100) if total_pages > 0 else 0
-            self.label.setText(f"PDF 생성 중... {percent}% ({current}/{total_pages})")
-            QApplication.processEvents()
-
-        # 개선된 export_and_merge_pdf 함수 사용
-        result = asyncio.run(export_and_merge_pdf(page_ids_unique, FINAL_PDF_NAME, progress_callback))
-        
-        elapsed = time.time() - start_time
-        self.progress_bar.setValue(total)
-        self.label.setText(f"PDF 생성 완료! (100%/{total}) (총 {elapsed:.2f}초)")
-        self.set_exporting_state(False)
-        self.show_export_result(result, elapsed)
+        self.export_pdf_thread = ExportPDFThread(page_ids_unique, FINAL_PDF_NAME)
+        self.export_pdf_thread.progress.connect(self.update_progress)
+        self.export_pdf_thread.finished.connect(self.show_export_result)
+        self.export_pdf_thread.error.connect(self.on_export_error)
+        self.export_pdf_thread.start()
 
 def main():
     app = QApplication(sys.argv)
@@ -147,4 +197,4 @@ def main():
     sys.exit(app.exec())
 
 if __name__ == "__main__":
-    main() 
+    main()
