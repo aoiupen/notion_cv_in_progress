@@ -2,6 +2,7 @@ import sys
 import os
 import asyncio
 import time
+from dotenv import load_dotenv
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget, QListWidgetItem, QLabel, QMessageBox, QProgressBar
 from PySide6.QtCore import Qt, QThread, Signal, Slot
 from notion_client import AsyncClient
@@ -9,6 +10,8 @@ from exporter import export_and_merge_pdf
 from notion_api import get_root_pages, get_first_child_page_ids
 from config import FINAL_PDF_NAME
 from utils import extract_page_title
+
+load_dotenv()
 
 class LoadPagesThread(QThread):
     pages_loaded = Signal(list, list)

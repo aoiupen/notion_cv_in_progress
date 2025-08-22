@@ -58,17 +58,73 @@ def rich_text_to_html(rich_text_array, process_nested_bullets=False):
     return html
 
 def apply_annotations(text, chunk):
+    """
+    Notion rich_text 'annotations'를 HTML로 변환.
+    - bold / italic / underline / strikethrough / code
+    - color / *_background (인라인 스타일)
+    """
     if not text:
         return ""
-    href = chunk.get('href')
-    if href:
-        return f'<a href="{href}">{text}</a>'
-    annotations = chunk.get('annotations', {})
-    if annotations.get('bold'): text = f'<strong>{text}</strong>'
-    if annotations.get('italic'): text = f'<em>{text}</em>'
-    if annotations.get('underline'): text = f'<u>{text}</u>'
-    if annotations.get('strikethrough'): text = f'<s>{text}</s>'
-    if annotations.get('code'): text = f'<code>{text}</code>'
+
+    ann = (chunk.get("annotations") or {})
+    color_key = ann.get("color", "default")
+
+    # --- 색상 매핑 (간단/안전한 기본값) ---
+    fg_map = {
+        "default": "#000000",
+        "gray":   "#6B7280",
+        "brown":  "#8B5E3C",
+        "orange": "#F59E0B",
+        "yellow": "#B58900",
+        "green":  "#16A34A",
+        "blue":   "#2563EB",
+        "purple": "#7C3AED",
+        "pink":   "#DB2777",
+        "red":    "#DC2626",
+    }
+    bg_map = {
+        "gray_background":   "#F3F4F6",
+        "brown_background":  "#EFE6E1",
+        "orange_background": "#FFF7ED",
+        "yellow_background": "#FEF9C3",
+        "green_background":  "#ECFDF5",
+        "blue_background":   "#EFF6FF",
+        "purple_background": "#F5F3FF",
+        "pink_background":   "#FDF2F8",
+        "red_background":    "#FEF2F2",
+    }
+
+    # --- 텍스트 스타일 태그 ---
+    if ann.get("bold"):
+        text = f"<strong>{text}</strong>"
+    if ann.get("italic"):
+        text = f"<em>{text}</em>"
+    if ann.get("underline"):
+        text = f"<u>{text}</u>"
+    if ann.get("strikethrough"):
+        text = f"<s>{text}</s>"
+    if ann.get("code"):
+        text = f"<code>{text}</code>"
+
+    # --- 전경/배경 색상 인라인 스타일 ---
+    styles = []
+    if color_key and color_key != "default":
+        if color_key.endswith("_background"):  # 예: 'blue_background'
+            bg = bg_map.get(color_key)
+            base = color_key.replace("_background", "")
+            fg = fg_map.get(base, "#000000")
+            if bg:
+                styles.append(f"background:{bg}")
+            if fg:
+                styles.append(f"color:{fg}")
+        else:
+            fg = fg_map.get(color_key)
+            if fg:
+                styles.append(f"color:{fg}")
+
+    if styles:
+        text = f'<span style="{";".join(styles)}">{text}</span>'
+
     return text
 
 def get_cell_style(cell, row_bg=None):
@@ -181,6 +237,11 @@ async def blocks_to_html(blocks, notion_client):
             image_data = block['image']
             url = image_data.get('file', {}).get('url') or image_data.get('external', {}).get('url', '')
             block_html = f"<img src='{url}' alt='Image' class='notion-block-image' style='max-width: 100%; height: auto;'>"
+            # 캡션 출력 추가
+            caption_rich_text = image_data.get('caption', [])
+            if caption_rich_text:
+                caption_html = rich_text_to_html(caption_rich_text)
+                block_html += f"<div class='notion-image-caption' style='text-align:left; color:#666; font-size:0.95em; margin-top:0.2em; margin-bottom:0.8em;'>{caption_html}</div>"
         elif block_type == 'code':
             code_text = rich_text_to_html(block['code']['rich_text'])
             language = block['code'].get('language', '')
@@ -277,9 +338,9 @@ def merge_pdfs(pdf_paths, output_path):
 
 async def export_and_merge_pdf(page_ids, output_pdf_path="My_Portfolio_Final.pdf", progress_callback=None):
     """여러 페이지의 PDF를 생성하고 병합합니다. progress_callback은 (current, total) 인수를 받습니다."""
-    from dotenv import load_dotenv
-    load_dotenv()
     NOTION_API_KEY = os.getenv("NOTION_API_KEY")
+    if not NOTION_API_KEY:
+        raise ValueError("NOTION_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요.")
     notion = AsyncClient(auth=NOTION_API_KEY)
     
     temp_dir = TEMP_DIR
