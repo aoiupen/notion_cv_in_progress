@@ -2,8 +2,9 @@ import sys
 import os
 import asyncio
 import time
-from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QPushButton, QListWidget, QListWidgetItem, QLabel, QMessageBox, QProgressBar
+from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QPushButton, QListWidget, QListWidgetItem, QLabel, QMessageBox, QProgressBar, QStyleFactory, QHBoxLayout
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette, QColor
 from notion_client import AsyncClient
 from exporter import export_and_merge_pdf
 from notion_api import get_root_pages, get_all_descendant_page_ids, get_first_child_page_ids
@@ -25,13 +26,17 @@ class MainWindowAdv(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
         
         # 기본 UI 요소들
         self.label = QLabel("Notion 루트 페이지 목록 (고급):")
+        self.label.setObjectName("headerLabel")
         layout.addWidget(self.label)
         
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QListWidget.MultiSelection)
+        self.list_widget.setAlternatingRowColors(True)
         layout.addWidget(self.list_widget)
         
         # TODO: 고급 기능들을 위한 UI 요소들 (향후 추가 예정)
@@ -44,11 +49,20 @@ class MainWindowAdv(QMainWindow):
         
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
         layout.addWidget(self.progress_bar)
         
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
         self.export_btn = QPushButton("PDF로 내보내기 (고급)")
+        self.export_btn.setProperty("type", "primary")
         self.export_btn.clicked.connect(self.export_pdf)
-        layout.addWidget(self.export_btn)
+        buttons.addWidget(self.export_btn)
+        self.refresh_btn = QPushButton("새로고침")
+        self.refresh_btn.setProperty("type", "secondary")
+        self.refresh_btn.clicked.connect(self.load_pages_sync)
+        buttons.addWidget(self.refresh_btn)
+        layout.addLayout(buttons)
 
     async def load_pages(self):
         self.label.setText("페이지 불러오는 중...")
@@ -139,9 +153,109 @@ class MainWindowAdv(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    try:
+        app.setStyle(QStyleFactory.create("Fusion"))
+        palette = QPalette()
+        palette.setColor(QPalette.Window, QColor("#F6F7FB"))
+        palette.setColor(QPalette.WindowText, QColor("#202124"))
+        palette.setColor(QPalette.Base, QColor("#FFFFFF"))
+        palette.setColor(QPalette.AlternateBase, QColor("#F2F4F8"))
+        palette.setColor(QPalette.ToolTipBase, QColor("#FFFFFF"))
+        palette.setColor(QPalette.ToolTipText, QColor("#202124"))
+        palette.setColor(QPalette.Text, QColor("#202124"))
+        palette.setColor(QPalette.Button, QColor("#FFFFFF"))
+        palette.setColor(QPalette.ButtonText, QColor("#202124"))
+        palette.setColor(QPalette.Highlight, QColor("#3B82F6"))
+        palette.setColor(QPalette.HighlightedText, QColor("#FFFFFF"))
+        app.setPalette(palette)
+        app.setStyleSheet(load_app_stylesheet())
+    except Exception:
+        pass
     window = MainWindowAdv()
     window.show()
     sys.exit(app.exec())
 
 if __name__ == "__main__":
     main() 
+
+# --- QSS (앱 전체 테마) ---
+def load_app_stylesheet() -> str:
+    return """
+    QWidget { background: #F6F7FB; color: #202124; }
+    QMainWindow { background: #F6F7FB; }
+
+    QLabel#headerLabel {
+        font-size: 16px;
+        font-weight: 600;
+        padding: 2px 0 6px 0;
+        color: #111827;
+    }
+
+    QListWidget {
+        background: #FFFFFF;
+        border: 1px solid #E5E7EB;
+        border-radius: 10px;
+        padding: 6px;
+    }
+    QListWidget::item {
+        padding: 8px 10px;
+        border-radius: 6px;
+        margin: 2px 2px;
+    }
+    QListWidget::item:selected {
+        background: #E0EBFF;
+        color: #111827;
+    }
+    QListWidget::item:hover {
+        background: #F3F4F6;
+    }
+
+    QProgressBar {
+        background: #EEF2FF;
+        border: 1px solid #E5E7EB;
+        border-radius: 8px;
+        text-align: center;
+        padding: 3px;
+        color: #111827;
+    }
+    QProgressBar::chunk {
+        background-color: #22C55E;
+        border-radius: 6px;
+    }
+
+    QPushButton {
+        border: 1px solid #D1D5DB;
+        border-radius: 10px;
+        padding: 8px 14px;
+        background: #FFFFFF;
+        color: #111827;
+    }
+    QPushButton[type=\"primary\"] {
+        background: #3B82F6;
+        color: #FFFFFF;
+        border: 1px solid #3B82F6;
+    }
+    QPushButton[type=\"primary\"]:hover { background: #2563EB; border-color: #2563EB; }
+    QPushButton[type=\"primary\"]:pressed { background: #1D4ED8; border-color: #1D4ED8; }
+
+    QPushButton[type=\"secondary\"] {
+        background: #FFFFFF;
+        color: #111827;
+        border: 1px solid #D1D5DB;
+    }
+    QPushButton[type=\"secondary\"]:hover { background: #F3F4F6; }
+    QPushButton[type=\"secondary\"]:pressed { background: #E5E7EB; }
+    QPushButton:disabled {
+        background: #F3F4F6;
+        color: #9CA3AF;
+        border-color: #E5E7EB;
+    }
+
+    QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; border: none; }
+    QScrollBar::handle:vertical { background: #D1D5DB; min-height: 24px; border-radius: 5px; }
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; background: none; border: none; }
+
+    QScrollBar:horizontal { background: transparent; height: 10px; margin: 2px; border: none; }
+    QScrollBar::handle:horizontal { background: #D1D5DB; min-width: 24px; border-radius: 5px; }
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; background: none; border: none; }
+    """
