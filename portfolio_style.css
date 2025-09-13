@@ -144,27 +144,39 @@ figure {
 
 /* --- 콜아웃 --- */
 .callout {
-    background: none;
-    border: none;
-    border-left: 3px solid #e0e0e0;
-    border-radius: 0;
-    padding: 0 0 0 1.5em;
-    margin: 2em 0;
-    font-style: italic;
-    line-height: 1.7;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: rgba(55,53,47,0.08);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin: 12px 0;
+  border: 1px solid rgba(0,0,0,0.04);
 }
-
-.callout p {
-    margin: 0.8em 0;
+.callout-icon {
+  flex: 0 0 auto;
+  line-height: 1.2;
+  font-size: 1.15rem;
+  transform: translateY(1px);
 }
-
-.callout p:first-child {
-    margin-top: 0;
+.callout-body {
+  flex: 1 1 auto;
 }
-
-.callout p:last-child {
-    margin-bottom: 0;
+.callout-body ul {
+  margin: 6px 0 0 1.2em;
+  padding: 0;
 }
+.callout-body li {
+  margin: 4px 0;
+}
+.callout blockquote {
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+.callout-body > :first-child { margin-top: 0; }
+.callout-body > :last-child  { margin-bottom: 0; }
+.callout--yellow_background { background: #FFF7D6; border-color: rgba(0,0,0,0.06); }
 
 /* --- 링크 --- */
 a {
@@ -300,5 +312,19 @@ body > *:first-child {
     margin: 0;
     padding: 0.4em 0;
     box-sizing: border-box;
+}
+
+/* --- 콜아웃 리스트 들여쓰기 통일 (1번 단락 기준) --- */
+.notion-bulleted_list-block {
+  padding-left: 0 !important;
+  margin-left: 0 !important;
+}
+.notion-bulleted_list-block > div {
+  padding-left: 0 !important;
+  margin-left: 0 !important;
+}
+.notion-bulleted_list-block .notion-emoji {
+  margin-right: 0.2em;
+  vertical-align: middle;
 }
 

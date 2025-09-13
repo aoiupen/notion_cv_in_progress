@@ -193,6 +193,15 @@ def estimate_column_widths_with_pixel_heuristic(table_rows):
         percent_widths[0] += diff
     return percent_widths
 
+async def ensure_children(block, notion_client):
+    if block.get('has_children') and not block.get('children'):
+        try:
+            resp = await notion_client.blocks.children.list(block_id=block['id'])
+            block['children'] = resp.get('results', [])
+        except Exception:
+            block['children'] = []
+    return block.get('children') or []
+
 async def blocks_to_html(blocks, notion_client):
     if not blocks:
         return ""
@@ -202,7 +211,7 @@ async def blocks_to_html(blocks, notion_client):
         block = blocks[i]
         block_type = block['type']
         if block_type == 'synced_block':
-            synced_children = block.get('children')
+            synced_children = await ensure_children(block, notion_client)
             synced_block_content = await blocks_to_html(synced_children, notion_client) if synced_children else ""
             html_parts.append(f"<div class='synced-block-container'>{synced_block_content}</div>")
             i += 1
@@ -214,8 +223,9 @@ async def blocks_to_html(blocks, notion_client):
             while j < len(blocks) and blocks[j]['type'] == block_type:
                 current_block = blocks[j]
                 item_content = rich_text_to_html(current_block[block_type]['rich_text'])
-                if current_block.get('has_children') and current_block.get('children'):
-                    item_content += await blocks_to_html(current_block['children'], notion_client)
+                children = await ensure_children(current_block, notion_client)
+                if children:
+                    item_content += await blocks_to_html(children, notion_client)
                 list_items.append(f"<li>{item_content}</li>")
                 j += 1
             html_parts.append(f"<{list_tag}>{''.join(list_items)}</{list_tag}>")
@@ -231,8 +241,9 @@ async def blocks_to_html(blocks, notion_client):
         elif block_type == 'paragraph':
             text = rich_text_to_html(block['paragraph']['rich_text'])
             block_html = f"<p>{text if text.strip() else ' '}</p>"
-            if block.get('has_children') and block.get('children'):
-                block_html += f"<div style='margin-left: 2em;'>{await blocks_to_html(block['children'], notion_client)}</div>"
+            children = await ensure_children(block, notion_client)
+            if children:
+                block_html += f"<div style='margin-left: 2em;'>{await blocks_to_html(children, notion_client)}</div>"
         elif block_type == 'image':
             image_data = block['image']
             url = image_data.get('file', {}).get('url') or image_data.get('external', {}).get('url', '')
@@ -252,7 +263,8 @@ async def blocks_to_html(blocks, notion_client):
             block_html = f"<blockquote>{rich_text_to_html(block['quote']['rich_text'])}</blockquote>"
         elif block_type == 'toggle':
             summary = rich_text_to_html(block['toggle']['rich_text'])
-            children_html = await blocks_to_html(block['children'], notion_client) if block.get('has_children') and block.get('children') else ""
+            children = await ensure_children(block, notion_client)
+            children_html = await blocks_to_html(children, notion_client) if children else ""
             block_html = f"<details open><summary>{summary}</summary>{children_html}</details>"
         elif block_type == 'table':
             width_ratios = estimate_column_widths_with_pixel_heuristic(block.get('children', []))
@@ -276,10 +288,17 @@ async def blocks_to_html(blocks, notion_client):
             block_html = table_html_content
         elif block_type == 'callout':
             callout = block['callout']
-            icon_html = f"{callout['icon']['emoji']} " if callout.get('icon') and callout['icon']['type'] == 'emoji' else ""
-            callout_text = rich_text_to_html(callout['rich_text'])
-            children_html = await blocks_to_html(block['children'], notion_client) if block.get('has_children') else ''
-            block_html = f"<div class='callout'>{icon_html}{callout_text}{children_html}</div>"
+            icon_html = callout['icon']['emoji'] if callout.get('icon') and callout['icon'].get('type') == 'emoji' else ''
+            callout_text = rich_text_to_html(callout.get('rich_text', []))
+            children = await ensure_children(block, notion_client)
+            children_html = await blocks_to_html(children, notion_client) if children else ""
+            color_cls = f" callout--{callout.get('color')}" if callout.get('color') else ""
+            block_html = (
+                f"<div class='callout{color_cls}'>"
+                f"  <div class='callout-icon'>{icon_html}</div>"
+                f"  <div class='callout-body'>{callout_text}{children_html}</div>"
+                f"</div>"
+            )
         html_parts.append(block_html)
         i += 1
     return '\n'.join(html_parts)
